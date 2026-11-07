@@ -17,6 +17,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Needed so the arm64 job can attach the installable APK to a release
+# (a plain artifact download is login-gated; a release asset is not).
+permissions:
+  contents: write
+  actions: write
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -127,10 +133,15 @@ jobs:
       - name: Locate APK
         id: apk
         run: |
-          # cargo-apk's output layout changed across versions (…/android/
-          # app/, …/apk/) — search instead of hardcoding one.
-          APK=$(find target -type f -name '*.apk' | head -n1)
-          if [ -z "$APK" ]; then echo "no APK produced" >&2; exit 1; fi
+          # cargo-apk writes an UNSIGNED *-unaligned.apk intermediate next to
+          # the final zipaligned + debug-signed .apk.  `find | head -n1` used
+          # to pick the intermediate, which Android rejects as an invalid
+          # package.  Exclude it and verify the signature before shipping.
+          APK=$(find target -type f -name '*.apk' ! -name '*-unaligned.apk' -print -quit)
+          if [ -z "$APK" ]; then echo "no signed APK produced" >&2; exit 1; fi
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -print -quit)
+          if [ -n "$APKSIGNER" ]; then "$APKSIGNER" verify --verbose "$APK"; fi
+          echo "Selected APK: $APK"
           echo "path=$APK" >> "$GITHUB_OUTPUT"
 
       - name: Upload APK artifact
@@ -139,6 +150,20 @@ jobs:
           name: prototype-rs-debug-${{ matrix.target }}
           path: ${{ steps.apk.outputs.path }}
           if-no-files-found: error
+
+      - name: Publish arm64 APK as a direct-download release asset
+        if: matrix.target == 'aarch64-linux-android'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG=ci-apks
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" \
+              --title "Prototype Rust debug APKs (CI)" \
+              --notes "Installable, zipaligned, debug-signed APK built by the build-apk workflow. Requires Android 8.0 (API 26) or newer."
+          gh release upload "$TAG" \
+            "${{ steps.apk.outputs.path }}#prototype-rs-arm64-debug.apk" \
+            --clobber
 
   # Placeholder so the pipeline shape is visible from day one; flips on
   # after the per-ABI matrix proves green (merging fat APK by hand or via
