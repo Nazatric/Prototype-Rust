@@ -1,0 +1,147 @@
+# prototype-rs — APK pipeline (loader-style: the APK ships NO game assets).
+#
+# Runs on the user's GitHub fork; this sandbox cannot build APKs (no
+# Android SDK/NDK), so the workflow is the APK factory.
+#
+# Pipeline:
+#   1. test-linux      — full workspace test suite + a host sanity check of
+#                        the android crate (default features, Linux host).
+#   2. build-apk       — per-ABI debug APK (aarch64 / armv7 / x86_64).
+#   3. universal-apk   — placeholder; enabled once per-ABI builds are green.
+
+name: build-apk
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test-linux:
+    name: Test workspace (Linux host)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Workspace test suite
+        run: cargo test --workspace --locked
+
+      # Block 57/58: the audio device + content edges.  CI runners have
+      # no sound device — the e2e device tests SKIP by design there;
+      # the unit tests + the cfg path still gate the feature compile.
+      - name: Audio device/content edge suite (feature gate, device tests skip device-less)
+        run: cargo test -p prototype-android --features audio-cpal --locked
+
+      - name: Android crate compiles on the host (default features)
+        run: cargo check -p prototype-android --locked
+
+      - name: wgpu render loop compiles (feature gate, no GPU needed to check)
+        run: cargo check -p prototype-render --features render-wgpu --locked
+
+      # M26: the desktop demo bin (same shared App handler the Android
+      # activity runs, driven by winit's desktop backends).  Compiles
+      # without a display; the user runs it locally for the first real
+      # GPU proof.  Also compile-checks prototype-android's `winit-app`
+      # feature (the shared handler) on the host.
+      - name: Desktop demo bin compiles (feature gate, no display needed)
+        run: cargo check -p prototype-demo --features render-wgpu --locked
+
+      # The FULL glue (winit event loop + wgpu pipelines + NativeActivity
+      # entry) compiles for the real Android target WITHOUT an NDK —
+      # `check` never links.  Proven in-sandbox on 2026-11-04; this gate
+      # keeps it true.
+      - name: Android glue compiles for aarch64 (feature on, no NDK needed to check)
+        run: |
+          rustup target add aarch64-linux-android
+          cargo check -p prototype-android --features android-activity --target aarch64-linux-android --locked
+
+  build-apk:
+    name: APK (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    needs: test-linux
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-linux-android      # arm64 phones — the primary target
+          - target: armv7-linux-androideabi    # 32-bit phones
+          - target: x86_64-linux-android       # emulators
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Set up JDK 17 (apk signing tooling)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK + NDK
+        run: |
+          ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --install \
+            "platforms;android-34" "build-tools;34.0.0" "ndk;27.0.12077973"
+          yes | ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --licenses || true
+
+      - name: Install cargo-apk
+        run: cargo install --locked cargo-apk
+
+      - name: Build debug APK
+        run: |
+          # ANDROID_HOME is a RUNNER image env var — it is NOT visible to
+          # the ${{ env.* }} context, so the NDK root is exported here.
+          export ANDROID_NDK_ROOT="$ANDROID_HOME/ndk/27.0.12077973"
+          # Block 58: audio-cpal rides the build — cpal's oboe backend
+          # needs the NDK at build-script time, and THIS job is the only
+          # place the NDK exists.  The APK then carries the movie +
+          # gameplay audio device edges (blocks 55/57) and the clip
+          # registry (block 58).  If the oboe build fails, this log is
+          # the diagnosis — the host-side audit already covers everything
+          # else (the block-55/57 scripts/m55_android_audit.sh cells).
+          cargo apk build -p prototype-android \
+            --features android-activity,audio-cpal \
+            --target ${{ matrix.target }}
+
+      - name: Locate APK
+        id: apk
+        run: |
+          # cargo-apk's output layout changed across versions (…/android/
+          # app/, …/apk/) — search instead of hardcoding one.
+          APK=$(find target -type f -name '*.apk' | head -n1)
+          if [ -z "$APK" ]; then echo "no APK produced" >&2; exit 1; fi
+          echo "path=$APK" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: prototype-rs-debug-${{ matrix.target }}
+          path: ${{ steps.apk.outputs.path }}
+          if-no-files-found: error
+
+  # Placeholder so the pipeline shape is visible from day one; flips on
+  # after the per-ABI matrix proves green (merging fat APK by hand or via
+  # apkanalyzer is then mechanical).
+  build-universal-apk:
+    name: Universal APK (placeholder)
+    runs-on: ubuntu-latest
+    needs: build-apk
+    if: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Not yet implemented
+        run: echo "Enable after per-ABI builds are green."
