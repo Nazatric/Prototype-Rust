@@ -95,7 +95,10 @@ package_label = "prototype-rs"
 apk_label = "Prototype Rust"
 
 [package.metadata.android.sdk]
-min_sdk_version = 24
+# cpal 0.18's Android backend links -laaudio; libaaudio.so first appears in
+# the API-26 NDK sysroot.  Building against API 24 fails the APK link with
+# "unable to find library -laaudio".
+min_sdk_version = 26
 target_sdk_version = 34
 
 [package.metadata.android.application]
