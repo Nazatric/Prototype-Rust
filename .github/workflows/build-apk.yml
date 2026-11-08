@@ -154,20 +154,31 @@ jobs:
               assert (b"MANAGE_EXTERNAL_STORAGE" in manifest
                       or utf16 in manifest), \
                   "MANAGE_EXTERNAL_STORAGE is missing from the generated manifest"
-              # Landscape is enforced both here (manifest) and at runtime
-              # via Activity.setRequestedOrientation, so a missing
-              # attribute is a WARNING rather than a release blocker.
-              land = "sensorLandscape"
-              if (land.encode() in manifest
-                      or land.encode("utf-16-le") in manifest):
-                  print("OK: android:screenOrientation=sensorLandscape in manifest")
-              else:
-                  print("WARN: manifest has no screenOrientation string; "
-                        "runtime setRequestedOrientation is the fallback")
+              # NOTE: do NOT grep the raw AXML bytes for
+              # "sensorLandscape": aapt compiles enum attributes into an
+              # integer constant, so the literal string is absent even
+              # when the attribute is present.  The aapt dump below is
+              # the authoritative check.
           print("OK: arm64 native lib + MANAGE_EXTERNAL_STORAGE declared")
           PY
         env:
           APK_PATH: ${{ steps.apk.outputs.path }}
+
+      - name: Verify the compiled manifest locks orientation to landscape
+        run: |
+          # `aapt dump xmltree` decodes binary AXML back to readable
+          # attributes, including enum-valued ones.  Never fatal: the
+          # runtime setRequestedOrientation(6) call is the backstop.
+          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt -print -quit)
+          if [ -n "$AAPT" ]; then
+            "$AAPT" dump xmltree "${{ steps.apk.outputs.path }}" AndroidManifest.xml \
+              | tee /tmp/xmltree.txt | grep -i -E 'screenOrientation|configChanges' || true
+            if grep -q 'screenOrientation' /tmp/xmltree.txt; then
+              echo "OK: android:screenOrientation present in compiled manifest"
+            else
+              echo "WARN: no screenOrientation attribute; runtime JNI lock is the fallback"
+            fi
+          fi
 
       # No actions/upload-artifact step: this repo's Actions artifact
       # storage quota is exhausted, and a release asset is the actual
