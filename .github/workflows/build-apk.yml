@@ -232,27 +232,41 @@ jobs:
       # workflow does not push to the branch on every run, because a bot
       # push creates an approval-required follow-up workflow run.
 
-  # One-shot helper, run with:
-  #   gh workflow run 410139473 --ref arena/8d27a532-prototype-rust
-  # Private-repo release assets need a GitHub login, and this sandbox cannot
-  # reach release-assets.githubusercontent.com.  This job copies all three
-  # ABI APKs into `apk/` so they are downloadable straight from the branch.
+  # One-shot helper: push a commit whose message contains `[publish-apks]`
+  # to refresh the checked-in APKs.  Private-repo release assets need a GitHub
+  # login, and this sandbox cannot reach release-assets.githubusercontent.com,
+  # so this job copies all three ABI APKs into `apk/` for direct download from
+  # the workspace file tree.  Ordinary commits do not trigger the bot push.
   publish-apks-to-branch:
     name: Copy all three APKs into apk/
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'pull_request'
     needs: build-apk
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAG: ci-apks
-      BRANCH: ${{ github.ref_name }}
+      BRANCH: ${{ github.event.pull_request.head.ref }}
     steps:
+      - name: Check whether this commit asked for an APK refresh
+        id: gate
+        run: |
+          set -euo pipefail
+          msg=$(gh api "repos/${{ github.repository }}/commits/${{ github.event.pull_request.head.sha }}" --jq '.commit.message' | head -1)
+          echo "head commit: $msg"
+          if [[ "$msg" == *"[publish-apks]"* ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@v4
+        if: steps.gate.outputs.run == 'true'
         with:
-          ref: ${{ github.ref_name }}
+          ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
 
       - name: Download the three release assets
+        if: steps.gate.outputs.run == 'true'
         run: |
           set -euo pipefail
           mkdir -p /tmp/assets apk
@@ -265,6 +279,7 @@ jobs:
           cp /tmp/assets/prototype-rs-permission-ui-x86_64-debug.apk apk/prototype-rs-x86_64-debug.apk
 
       - name: Verify each APK is signed and contains the right native ABI
+        if: steps.gate.outputs.run == 'true'
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -288,6 +303,7 @@ jobs:
           PY
 
       - name: Commit and push only when the APKs changed
+        if: steps.gate.outputs.run == 'true'
         run: |
           set -euo pipefail
           git config user.name  "github-actions[bot]"
