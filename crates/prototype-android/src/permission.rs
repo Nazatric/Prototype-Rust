@@ -79,32 +79,42 @@ mod android {
 
         fn class(&self, name: &'static [u8]) -> jobject {
             // SAFETY: framework classes only; `name` is NUL-terminated.
-            unsafe { (self.f().FindClass)(self.env, c(name)) }
+            unsafe { (self.f().v1_1.FindClass)(self.env, c(name)) }
         }
 
         fn exception_check(&self) -> bool {
-            // SAFETY: plain JNI 1.2 call on a live env.
-            unsafe { (self.f().ExceptionCheck)(self.env) }
+            // SAFETY: JNI 1.1 call on a live env.  `ExceptionCheck` is
+            // a 1.4 addition (absent from the v1_1 prefix), so probe with
+            // `ExceptionOccurred` and drop the local reference it returns.
+            unsafe {
+                let exc = (self.f().v1_1.ExceptionOccurred)(self.env);
+                if exc.is_null() {
+                    false
+                } else {
+                    (self.f().v1_1.DeleteLocalRef)(self.env, exc);
+                    true
+                }
+            }
         }
 
         fn clear_exception(&self) {
             // SAFETY: plain JNI 1.1 call on a live env.
-            unsafe { (self.f().ExceptionClear)(self.env) }
+            unsafe { (self.f().v1_1.ExceptionClear)(self.env) }
         }
 
         fn new_string(&self, s: &'static [u8]) -> jobject {
             // SAFETY: `s` is a NUL-terminated modified-UTF-8 literal.
-            unsafe { (self.f().NewStringUTF)(self.env, c(s)) }
+            unsafe { (self.f().v1_1.NewStringUTF)(self.env, c(s)) }
         }
 
         fn static_method(&self, cls: jobject, name: &'static [u8], sig: &'static [u8]) -> jmethodID {
             // SAFETY: `cls` is a non-null local class ref from FindClass.
-            unsafe { (self.f().GetStaticMethodID)(self.env, cls, c(name), c(sig)) }
+            unsafe { (self.f().v1_1.GetStaticMethodID)(self.env, cls, c(name), c(sig)) }
         }
 
         fn method(&self, cls: jobject, name: &'static [u8], sig: &'static [u8]) -> jmethodID {
             // SAFETY: `cls` is a non-null local class ref.
-            unsafe { (self.f().GetMethodID)(self.env, cls, c(name), c(sig)) }
+            unsafe { (self.f().v1_1.GetMethodID)(self.env, cls, c(name), c(sig)) }
         }
     }
 
@@ -122,7 +132,7 @@ mod android {
             }
             let invoke: &JNIInvokeInterface_ = &**vm;
             let mut out: *mut c_void = std::ptr::null_mut();
-            let rc = (invoke.AttachCurrentThread)(vm, &mut out, std::ptr::null_mut());
+            let rc = (invoke.v1_1.AttachCurrentThread)(vm, &mut out, std::ptr::null_mut());
             if rc != JNI_OK || out.is_null() {
                 return None;
             }
@@ -160,7 +170,7 @@ mod android {
                 return false;
             }
             let granted =
-                (j.f().CallStaticBooleanMethodA)(j.env, cls, mid, std::ptr::null());
+                (j.f().v1_1.CallStaticBooleanMethodA)(j.env, cls, mid, std::ptr::null());
             if j.exception_check() {
                 j.clear_exception();
                 return false;
@@ -202,7 +212,7 @@ mod android {
                     return false;
                 }
                 let args = [jvalue { l: action_str }];
-                (j.f().NewObjectA)(j.env, intent_cls, ctor, args.as_ptr())
+                (j.f().v1_1.NewObjectA)(j.env, intent_cls, ctor, args.as_ptr())
             } else {
                 let ctor = j.method(
                     intent_cls,
@@ -214,14 +224,14 @@ mod android {
                     return false;
                 }
                 let args = [jvalue { l: action_str }, jvalue { l: uri }];
-                (j.f().NewObjectA)(j.env, intent_cls, ctor, args.as_ptr())
+                (j.f().v1_1.NewObjectA)(j.env, intent_cls, ctor, args.as_ptr())
             };
             if j.exception_check() || intent.is_null() {
                 j.clear_exception();
                 return false;
             }
 
-            let act_cls = (j.f().GetObjectClass)(j.env, activity);
+            let act_cls = (j.f().v1_1.GetObjectClass)(j.env, activity);
             if act_cls.is_null() {
                 j.clear_exception();
                 return false;
@@ -236,7 +246,7 @@ mod android {
                 return false;
             }
             let args = [jvalue { l: intent }];
-            (j.f().CallVoidMethodA)(j.env, activity, start, args.as_ptr());
+            (j.f().v1_1.CallVoidMethodA)(j.env, activity, start, args.as_ptr());
             if j.exception_check() {
                 j.clear_exception();
                 return false;
@@ -273,7 +283,7 @@ mod android {
                     let pkg = j.new_string(b"package:com.nazatric.prototype_rs\0");
                     if !pkg.is_null() {
                         let args = [jvalue { l: pkg }];
-                        uri = (j.f().CallStaticObjectMethodA)(
+                        uri = (j.f().v1_1.CallStaticObjectMethodA)(
                             j.env,
                             uri_cls,
                             parse,
