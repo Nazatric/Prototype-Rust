@@ -1679,6 +1679,7 @@ dependencies = [
  "prototype-render",
  "prototype-stream",
  "prototype-video",
+ "raw-window-handle",
  "thiserror 1.0.69",
  "winit",
 ]

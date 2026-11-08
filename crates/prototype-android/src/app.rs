@@ -215,7 +215,10 @@ pub fn map_key(key: &Key) -> Option<KeyCode> {
 
 /// The clear colour until meshes draw: the dark blue-grey of the PC
 /// frontend's loading screen (eyeballed — DESIGN, not evidence).
-const CLEAR: [f64; 4] = [0.08, 0.09, 0.11, 1.0];
+// A clearly visible slate blue, NOT near-black.  After a successful boot
+// the render loop must look alive even if the world's geometry is empty;
+// the old 0.08/0.09/0.11 clear read as "black screen" to users.
+const CLEAR: [f64; 4] = [0.16, 0.31, 0.50, 1.0];
 
 /// Block 38: the gameplay audio stage's output rate (Hz) — the ring the
 /// CPAL device edge would open at (`cpal_out`'s default stream rate;
@@ -454,12 +457,22 @@ pub struct AudioSeamApply {
     pub failures: Vec<(&'static str, String)>,
 }
 
-/// GPU state of one of the two first-launch setup screens.
-///
-/// It is just a movie-quad draw: one RGBA8 texture (the pre-rendered
-/// bitmap-font screen), one bind group, one pipeline.  Keeping the
-/// texture/view alive here is what keeps the bind group valid.
-struct PermissionScreen {
+/// Platform-independent state of one status screen (ALLOW / WAITING /
+/// BOOTING / ERROR).  The GPU objects live in [`GpuStatusScreen`]; when
+/// there is no working GPU the same RGBA pixels go through
+/// [`crate::software_screen`] instead.
+struct StatusScreen {
+    kind: PermissionScreenKind,
+    /// Optional auto-dismiss deadline (`Running` confirmation).
+    hide_at: Option<Instant>,
+}
+
+/// GPU-backed status screen (the normal path).  One RGBA8 texture, one
+/// view, one bind group and the fullscreen movie quad.  Only built after
+/// a wgpu renderer already owns the ANativeWindow — see
+/// [`App::ensure_status_renderer`] for why the CPU blitter must NEVER
+/// run first on a GPU-capable device.
+struct GpuStatusScreen {
     quad: VideoQuad,
     bind_group: wgpu::BindGroup,
     kind: PermissionScreenKind,
@@ -481,16 +494,31 @@ pub struct App {
     window_attrs: WindowAttributes,
     /// The winit window (None while suspended / not yet created).
     window: Option<Arc<Window>>,
-    /// The wgpu renderer (None while suspended / before first boot).
-    /// Also backs the first-launch setup screens, so a resume that boots
-    /// the game reuses the very same device/surface.
+    /// The wgpu renderer (None while suspended / before first frame).
+    /// Created lazily on a redraw for the status screens, then reused by
+    /// the deferred game boot so only ONE surface is ever configured.
     renderer: Option<Renderer>,
     /// Raw JNI handles from `android_activity::AndroidApp` (integers so
     /// this struct still compiles on desktop).  `None` off Android.
     permission_bridge: Option<PermissionBridge>,
-    /// The setup screen currently owning every frame, if any.  While
+    /// The status screen currently owning every frame, if any.  While
     /// `Some`, the world/movie render path is skipped entirely.
-    permission_screen: Option<PermissionScreen>,
+    permission_screen: Option<StatusScreen>,
+    /// GPU-side state for the CURRENT status screen, when a wgpu renderer
+    /// exists.  `None` means "draw via the CPU blitter" (GPU-less device).
+    gpu_status: Option<GpuStatusScreen>,
+    /// Once GPU bring-up has failed we never retry it for this surface:
+    /// `ANativeWindow_lock` connects a CPU producer that a later Vulkan
+    /// swapchain could not displace.
+    cpu_only: bool,
+    /// A wgpu renderer has not yet been attempted for this status screen.
+    gpu_pending: bool,
+    /// The BOOTING screen has been posted once; run the deferred engine
+    /// boot on the NEXT redraw (so heavy/GPU work never runs inside the
+    /// `resumed()` lifecycle callback).
+    pending_boot: bool,
+    /// A deferred boot is queued for the next `RedrawRequested`.
+    boot_requested: bool,
     /// Pipelines created from the boot report (per pair).
     pipelines: Vec<GpuPipeline>,
     /// Block 34: the DLL `default` WORLD pipeline — what world geometry
@@ -727,6 +755,11 @@ impl App {
             renderer: None,
             permission_bridge: None,
             permission_screen: None,
+            gpu_status: None,
+            cpu_only: false,
+            gpu_pending: false,
+            pending_boot: false,
+            boot_requested: false,
             pipelines: Vec::new(),
             world_pipeline: None,
             world_wvp_register: 0,
@@ -788,72 +821,155 @@ impl App {
         self.permission_bridge = Some(bridge);
     }
 
-    /// Drop the setup screen's GPU state (the renderer itself is kept —
-    /// the game boot reuses that device/surface).
+    /// Dismiss the status screen (the next redraw renders the world).
     #[allow(dead_code)]
     fn clear_permission_screen(&mut self) {
         if self.permission_screen.take().is_some() {
-            log::info!("permission: setup screen dismissed");
+            log::info!("status: screen dismissed");
+        }
+        self.gpu_status = None;
+        self.gpu_pending = false;
+    }
+
+    /// Select a status screen.  `Booting` also queues the deferred
+    /// engine boot, which runs on the redraw AFTER this screen has been
+    /// posted — so a slow or failing GPU bring-up can never look like a
+    /// black screen or an immediate crash.
+    #[allow(dead_code)]
+    fn set_status_screen(&mut self, kind: PermissionScreenKind) {
+        let hide_at = match kind {
+            PermissionScreenKind::Running => {
+                Some(Instant::now() + std::time::Duration::from_millis(900))
+            }
+            _ => None,
+        };
+        self.permission_screen = Some(StatusScreen { kind, hide_at });
+        self.gpu_status = None;
+        // Try wgpu BEFORE the CPU blitter: ANativeWindow_lock connects a
+        // CPU producer that a later Vulkan swapchain cannot displace.
+        self.gpu_pending = !self.cpu_only && self.renderer.is_none();
+        self.pending_boot = kind == PermissionScreenKind::Booting;
+        self.boot_requested = false;
+        log::info!("status: showing {kind:?} screen (GPU-first, CPU fallback)");
+        if let Some(w) = &self.window {
+            w.request_redraw();
         }
     }
 
-    /// Show one of the two first-launch screens, creating the window and
-    /// wgpu surface if the app has not done so yet.  This is what makes
-    /// "ALLOW ALL FILE ACCESS" actually visible instead of a logcat line.
+    /// Bring up the wgpu renderer for the status screens, ONCE, on a
+    /// redraw (never in `resumed()`), with panics contained.  A failure
+    /// switches this surface to CPU-only mode for good.
     #[allow(dead_code)]
-    fn install_permission_screen(
-        &mut self,
-        kind: PermissionScreenKind,
-        event_loop: &ActiveEventLoop,
-    ) {
-        if self.window.is_none() {
-            match event_loop.create_window(self.window_attrs.clone()) {
-                Ok(w) => {
-                    log::info!("permission: window created for setup screen");
-                    self.window = Some(Arc::new(w));
-                }
-                Err(e) => {
-                    log::error!("permission: window creation failed: {e}");
-                    return;
-                }
-            }
+    fn ensure_status_renderer(&mut self) {
+        if self.cpu_only || self.renderer.is_some() {
+            return;
         }
         let Some(window) = self.window.clone() else {
             return;
         };
-        if self.renderer.is_none() {
-            let size = window.inner_size();
-            let (w, h) = (size.width.max(1), size.height.max(1));
-            match pollster::block_on(Renderer::new(window.clone(), w, h)) {
-                Ok(r) => self.renderer = Some(r),
-                Err(e) => {
-                    log::error!("permission: renderer creation failed: {e}");
-                    return;
-                }
+        let size = window.inner_size();
+        let (w, h) = (size.width.max(1), size.height.max(1));
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            pollster::block_on(Renderer::new(window.clone(), w, h))
+        }));
+        match outcome {
+            Ok(Ok(r)) => {
+                log::info!("status: wgpu renderer ready — status screens use the GPU");
+                self.renderer = Some(r);
+            }
+            Ok(Err(e)) => {
+                log::error!("status: wgpu renderer failed ({e}) — CPU blitter fallback");
+                self.cpu_only = true;
+                self.renderer = None;
+            }
+            Err(_) => {
+                log::error!("status: wgpu renderer PANICKED — CPU blitter fallback");
+                self.cpu_only = true;
+                self.renderer = None;
             }
         }
+    }
+
+    /// Build the GPU quad for `kind` on the live renderer.
+    #[allow(dead_code)]
+    fn build_gpu_status(&mut self, kind: PermissionScreenKind) {
+        let Some(renderer) = self.renderer.as_ref() else {
+            return;
+        };
         let (rgba, tw, th) = permission_screen_pixels(kind);
-        let renderer = self
-            .renderer
-            .as_ref()
-            .expect("renderer installed just above");
-        let texture = renderer.create_video_texture(tw, th, "first-launch ui");
+        let texture = renderer.create_video_texture(tw, th, "status ui");
         if let Err(e) = renderer.upload_video_frame(&texture, rgba) {
-            log::error!("permission: screen upload failed: {e}");
+            log::error!("status: GPU screen upload failed: {e}");
             return;
         }
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let quad = renderer.create_video_quad(renderer.surface_format());
         let bind_group = renderer.create_video_bind_group(&quad, &view);
-        self.permission_screen = Some(PermissionScreen {
+        self.gpu_status = Some(GpuStatusScreen {
             quad,
             bind_group,
             kind,
             _texture: texture,
             _view: view,
         });
-        log::info!("permission: showing {kind:?} screen");
-        window.request_redraw();
+    }
+
+    /// Show a status screen, creating the window first if necessary.
+    /// GPU bring-up is deferred to the following redraw (never done in
+    /// the `resumed()` lifecycle callback) and is panic-contained; the
+    /// CPU blitter takes over only if wgpu is unavailable.
+    #[allow(dead_code)]
+    fn show_status_screen(&mut self, kind: PermissionScreenKind, event_loop: &ActiveEventLoop) {
+        if self.window.is_none() {
+            match event_loop.create_window(self.window_attrs.clone()) {
+                Ok(w) => {
+                    log::info!("status: window created for setup screen");
+                    self.window = Some(Arc::new(w));
+                }
+                Err(e) => {
+                    log::error!("status: window creation failed: {e}");
+                    return;
+                }
+            }
+        }
+        self.set_status_screen(kind);
+    }
+
+    /// Run the engine boot OUTSIDE `resumed()` and contain any panic so a
+    /// bad archive/shader/GPU never closes the process.  On failure we
+    /// drop the renderer (releasing the native window) and show the
+    /// on-screen ERROR screen with tap-to-retry.
+    #[allow(dead_code)]
+    fn run_deferred_boot(&mut self) {
+        log::info!("boot: deferred engine boot starting");
+        if self.cpu_only {
+            // No GPU on this device.  Do NOT try_boot(): it would create a
+            // second Surface on a window owned by the CPU producer.
+            log::error!("boot: no Vulkan device — showing ERROR screen with retry");
+            self.set_status_screen(PermissionScreenKind::Error);
+            if let Some(w) = &self.window {
+                w.request_redraw();
+            }
+            return;
+        }
+        let outcome =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.try_boot()));
+        if outcome.is_err() {
+            log::error!("boot: PANIC caught — app stays alive, showing ERROR screen");
+        }
+        if self.renderer.is_some() {
+            self.clear_permission_screen();
+            log::info!("boot: renderer live — render loop active");
+        } else {
+            self.renderer = None;
+            self.pipelines.clear();
+            self.cpu_only = true;
+            self.set_status_screen(PermissionScreenKind::Error);
+            log::warn!("boot: no renderer — showing ERROR screen with retry");
+        }
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
     }
 
     /// Override the attributes of the window created on first resume
@@ -2523,9 +2639,14 @@ impl App {
             log::info!("tearing down GPU state (surface is invalid across pause)");
         }
         self.renderer = None;
-        // The setup screen's bind group references the dead device; it
-        // must not survive a pause (resumed() re-installs it if needed).
+        // A pause invalidates the surface; resumed() re-evaluates the
+        // permission gate and re-installs the appropriate status screen.
         self.permission_screen = None;
+        self.gpu_status = None;
+        self.cpu_only = false;
+        self.gpu_pending = false;
+        self.pending_boot = false;
+        self.boot_requested = false;
         self.pipelines.clear();
         self.world_pipeline = None;
         self.batches.clear();
@@ -2587,10 +2708,7 @@ impl ApplicationHandler for App {
                     log::info!(
                         "permission: all-files access NOT granted — showing ALLOW screen"
                     );
-                    self.install_permission_screen(
-                        PermissionScreenKind::Grant,
-                        event_loop,
-                    );
+                    self.show_status_screen(PermissionScreenKind::Grant, event_loop);
                     return;
                 }
                 // ONLY NOW, after the grant, create the asset folder.
@@ -2616,10 +2734,7 @@ impl ApplicationHandler for App {
                 // in yet.  Show where to put them; the NEXT resume
                 // re-scans and boots with no extra tap.
                 log::info!("setup: waiting for .rcf files — showing folder screen");
-                self.install_permission_screen(
-                    PermissionScreenKind::Waiting,
-                    event_loop,
-                );
+                self.show_status_screen(PermissionScreenKind::Waiting, event_loop);
                 return;
             }
             #[cfg(not(target_os = "android"))]
@@ -2641,8 +2756,25 @@ impl ApplicationHandler for App {
                 }
             }
         }
-        if self.renderer.is_none() {
-            self.try_boot();
+        // Do NOT boot here on Android.  `resumed()` is a lifecycle
+        // callback on the native thread; doing wgpu/Vulkan bring-up (or
+        // reading hundreds of MB of .rcf files) inside it is what made
+        // the APK close on launch.  Post the BOOTING screen first, then
+        // boot on the following redraw — fully automatic, no Play button.
+        #[cfg(target_os = "android")]
+        {
+            if self.renderer.is_none() {
+                self.set_status_screen(PermissionScreenKind::Booting);
+            } else {
+                self.clear_permission_screen();
+            }
+        }
+        // Desktop demo keeps the original immediate boot.
+        #[cfg(not(target_os = "android"))]
+        {
+            if self.renderer.is_none() {
+                self.try_boot();
+            }
         }
     }
 
@@ -2666,18 +2798,67 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
-                // --- first-launch setup screen owns the frame ----------
-                // While a setup screen is up there is no boot report, no
-                // movie and no world: present the pre-rendered RGBA UI
-                // through the same fullscreen quad and skip everything
-                // below.  Disjoint field borrows (screen & renderer).
-                if let (Some(screen), Some(r)) =
-                    (self.permission_screen.as_ref(), self.renderer.as_mut())
-                {
-                    if let Err(e) =
-                        r.render_video_frame(&screen.quad, &screen.bind_group)
-                    {
-                        log::warn!("permission: setup screen present failed: {e}");
+                // --- DEFERRED BOOT (one frame after BOOTING) -----------
+                // MUST be checked BEFORE the status-screen branch: the
+                // BOOTING screen is still `Some` on this frame, and
+                // returning there would otherwise starve the boot
+                // forever.  The posted BOOTING frame stays on screen
+                // while the (possibly slow) engine bring-up runs.
+                if self.boot_requested {
+                    self.boot_requested = false;
+                    self.run_deferred_boot();
+                    return;
+                }
+                // --- STATUS SCREEN -------------------------------------
+                // GPU-first: try wgpu BEFORE anything locks the
+                // ANativeWindow as a CPU producer (AOSP Surface::lock
+                // connects NATIVE_WINDOW_API_CPU, which a later Vulkan
+                // swapchain cannot displace).  Only if that fails do we
+                // fall back to the software blitter — and in that case we
+                // never try GPU again for this surface, so the two
+                // producers are never mixed.
+                if self.gpu_pending {
+                    self.gpu_pending = false;
+                    self.ensure_status_renderer();
+                }
+                let status = self
+                    .permission_screen
+                    .as_ref()
+                    .map(|s| (s.kind, s.hide_at));
+                if let Some((kind, hide_at)) = status {
+                    if hide_at.is_some_and(|t| Instant::now() >= t) {
+                        self.clear_permission_screen();
+                        if let Some(w) = &self.window {
+                            w.request_redraw();
+                        }
+                        return;
+                    }
+                    if self.renderer.is_some() {
+                        if self.gpu_status.as_ref().map(|g| g.kind) != Some(kind) {
+                            self.build_gpu_status(kind);
+                        }
+                        if let (Some(g), Some(r)) =
+                            (self.gpu_status.as_ref(), self.renderer.as_mut())
+                        {
+                            if let Err(e) = r.render_video_frame(&g.quad, &g.bind_group) {
+                                log::warn!("status: GPU screen present failed: {e}");
+                            }
+                        }
+                    } else {
+                        let (rgba, tw, th) = permission_screen_pixels(kind);
+                        if let Some(w) = &self.window {
+                            if !crate::software_screen::draw(w, rgba, tw, th) {
+                                log::warn!(
+                                    "status: native window not ready for {kind:?}, retrying"
+                                );
+                            }
+                        }
+                    }
+                    // The BOOTING frame is now posted.  Boot on the NEXT
+                    // redraw, never inside resumed().
+                    if self.pending_boot {
+                        self.pending_boot = false;
+                        self.boot_requested = true;
                     }
                     return;
                 }
@@ -3302,17 +3483,29 @@ impl ApplicationHandler for App {
             WindowEvent::Touch(t) => {
                 // First-launch gate: ANY tap on the ALLOW screen opens
                 // Android's all-files-access Settings page.  On the
-                // waiting screen a tap is deliberately ignored — the
-                // next app entry (resume) re-scans and boots by itself.
+                // WAITING / BOOTING screens a tap is ignored — the next
+                // app entry (resume) re-scans and boots by itself.  On
+                // the ERROR screen a tap retries the boot.
                 #[cfg(target_os = "android")]
                 {
-                    if let Some(screen) = &self.permission_screen {
-                        if t.phase == WinitTouchPhase::Started
-                            && screen.kind == PermissionScreenKind::Grant
-                        {
-                            if let Some(bridge) = self.permission_bridge {
-                                log::info!("permission: tapped ALLOW — opening Settings");
-                                crate::permission::open_all_files_settings(bridge);
+                    let kind = self.permission_screen.as_ref().map(|s| s.kind);
+                    if let Some(kind) = kind {
+                        if t.phase == WinitTouchPhase::Started {
+                            match kind {
+                                PermissionScreenKind::Grant => {
+                                    if let Some(bridge) = self.permission_bridge {
+                                        log::info!("permission: tapped ALLOW — opening Settings");
+                                        crate::permission::open_all_files_settings(bridge);
+                                    }
+                                }
+                                PermissionScreenKind::Error => {
+                                    log::info!("status: retry tapped — re-scanning and rebooting");
+                                    self.state = scan_or_setup(&self.folder);
+                                    // Allow a fresh GPU attempt on retry.
+                                    self.cpu_only = false;
+                                    self.set_status_screen(PermissionScreenKind::Booting);
+                                }
+                                _ => {}
                             }
                         }
                         return;
@@ -3389,9 +3582,15 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        // Continuous frame loop: one redraw requested per iteration while
-        // a renderer is live (Fifo present mode paces it to vsync).
-        if self.renderer.is_some() {
+        // Continuous frame loop while a renderer is live (Fifo present
+        // mode paces it to vsync).  ALSO keep pumping frames while a
+        // software status screen is up or a deferred boot is queued —
+        // otherwise a screen shown before any renderer exists would
+        // freeze on a single (possibly still-invalid) frame.
+        if self.renderer.is_some()
+            || self.permission_screen.is_some()
+            || self.boot_requested
+        {
             if let Some(w) = &self.window {
                 w.request_redraw();
             }

@@ -117,8 +117,13 @@ jobs:
           # ANDROID_HOME is a RUNNER image env var — it is NOT visible to
           # the ${{ env.* }} context, so the NDK root is exported here.
           export ANDROID_NDK_ROOT="$ANDROID_HOME/ndk/27.0.12077973"
+          # audio-cpal is deliberately OFF for the APK: cpal's Oboe/AAudio
+          # backend opens a real audio device during boot and was a prime
+          # suspect for the "closes immediately" report.  The engine's
+          # audio CONTENT edges still compile/run; only the device stream
+          # is omitted from this debug build.
           cargo apk build -p prototype-android \
-            --features android-activity,audio-cpal \
+            --features android-activity \
             --target ${{ matrix.target }}
 
       - name: Locate APK
@@ -149,6 +154,16 @@ jobs:
               assert (b"MANAGE_EXTERNAL_STORAGE" in manifest
                       or utf16 in manifest), \
                   "MANAGE_EXTERNAL_STORAGE is missing from the generated manifest"
+              # Landscape is enforced both here (manifest) and at runtime
+              # via Activity.setRequestedOrientation, so a missing
+              # attribute is a WARNING rather than a release blocker.
+              land = "sensorLandscape"
+              if (land.encode() in manifest
+                      or land.encode("utf-16-le") in manifest):
+                  print("OK: android:screenOrientation=sensorLandscape in manifest")
+              else:
+                  print("WARN: manifest has no screenOrientation string; "
+                        "runtime setRequestedOrientation is the fallback")
           print("OK: arm64 native lib + MANAGE_EXTERNAL_STORAGE declared")
           PY
         env:

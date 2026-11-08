@@ -16,9 +16,11 @@
 //! 4. On the NEXT app entry/resume, [`game_files`] discovers and orders
 //!    everything the engine needs and the game boots AUTOMATICALLY — there
 //!    is no Play button and no extra tap ([`app`], winit `resumed`).
-//! 5. The engine renders through the wgpu edge in `prototype-render`
-//!    (same fullscreen quad used by the setup screens and boot movie).
-//!    See `activity` for the NativeActivity entry point.
+//! 5. The status screens are landscape RGBA frames drawn through the
+//!    wgpu fullscreen quad, with a GPU-independent `ANativeWindow`
+//!    fallback ([`software_screen`]) so a broken Vulkan driver can never
+//!    leave a black screen.  The engine itself renders through the wgpu
+//!    edge in `prototype-render`.  See `activity` for NativeActivity.
 //!
 //! # Testability
 //!
@@ -55,11 +57,17 @@ pub mod nis;
 pub mod permission;
 pub mod touch;
 
-// The two pre-rendered first-launch screens (RGBA8 textures).  Only the
-// shared winit App needs them; the desktop demo compiles the module too
-// so `cargo test --workspace` exercises the pixel-size assertions.
+// The five pre-rendered landscape status screens (RGBA8 frames).  Only
+// the shared winit App needs them; the desktop demo compiles the module
+// too so `cargo test --workspace` exercises the pixel-size assertions.
 #[cfg(feature = "winit-app")]
 pub mod permission_ui;
+
+// GPU-independent status-screen FALLBACK: writes those RGBA frames
+// straight into the ANativeWindow when wgpu is unavailable.  On desktop
+// it is a documented no-op stub so the shared App compiles unchanged.
+#[cfg(feature = "winit-app")]
+pub mod software_screen;
 
 // The shared winit ApplicationHandler: gated by `winit-app` only (no
 // target gate) — it compiles and is unit-tested on desktop hosts too,

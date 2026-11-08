@@ -47,7 +47,9 @@ use winit::platform::android::EventLoopBuilderExtAndroid;
 use crate::app::{App, AppState};
 use crate::permission::PermissionBridge;
 
-/// Install the logcat sink tagged `prototype-rs`.
+/// Install the logcat sink tagged `prototype-rs` and route every panic
+/// into logcat, so a device-side abort is diagnosable with
+/// `adb logcat -s prototype-rs` instead of just closing the app.
 pub fn init_logging(app: &AndroidApp) {
     android_logger::init_once(
         Config::default()
@@ -55,6 +57,10 @@ pub fn init_logging(app: &AndroidApp) {
             .with_tag("prototype-rs"),
     );
     let _ = app; // kept for future vm-visibility config
+    std::panic::set_hook(Box::new(|info| {
+        log::error!("PANIC: {info}");
+        eprintln!("prototype-rs PANIC: {info}");
+    }));
 }
 
 /// The NativeActivity entry point.
@@ -64,11 +70,15 @@ pub fn android_main(app: AndroidApp) {
     log::info!("prototype-rs native activity starting (loader-style, no bundled assets)");
 
     // Capture the JNI handles BEFORE `with_android_app` consumes the app.
-    // Both remain valid for the whole process lifetime.
+    // Both remain valid for the whole process lifetime (winit keeps the
+    // AndroidApp alive until the event loop exits).
     let bridge = PermissionBridge {
         vm: app.vm_as_ptr() as usize,
         activity: app.activity_as_ptr() as usize,
     };
+    // Belt-and-braces landscape lock at runtime; the manifest's
+    // android:screenOrientation="sensorLandscape" is authoritative.
+    crate::permission::force_landscape(bridge);
 
     let folder = crate::asset_folder::default_folder();
     log::info!("asset folder: {}", folder.display());
@@ -86,12 +96,27 @@ pub fn android_main(app: AndroidApp) {
     let mut app_h = App::with_state(folder.clone(), state);
     app_h.set_permission_bridge(bridge);
 
-    let event_loop: EventLoop<()> = EventLoop::with_user_event()
+    let event_loop: EventLoop<()> = match EventLoop::with_user_event()
         .with_android_app(app)
         .build()
-        .expect("winit event loop");
-    if let Err(e) = event_loop.run_app(&mut app_h) {
-        log::error!("event loop terminated with error: {e}");
+    {
+        Ok(el) => el,
+        Err(e) => {
+            log::error!("winit event loop creation failed: {e}");
+            return;
+        }
+    };
+
+    // A panic anywhere in winit's callbacks used to abort the process
+    // with no useful trace.  Catch it here (the boot itself has its own
+    // catch_unwind and shows an on-screen ERROR screen), log it, and
+    // leave the thread alive long enough for logcat to flush.
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        event_loop.run_app(&mut app_h)
+    }));
+    match outcome {
+        Ok(Ok(())) => log::info!("prototype-rs native activity finished cleanly"),
+        Ok(Err(e)) => log::error!("event loop terminated with error: {e}"),
+        Err(_) => log::error!("event loop PANICKED — see the PANIC line above in logcat"),
     }
-    log::info!("prototype-rs native activity finished");
 }

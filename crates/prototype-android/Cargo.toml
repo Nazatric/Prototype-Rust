@@ -54,6 +54,10 @@ winit              = { version = "0.30", optional = true, default-features = fal
 # the workspace lockfile (android-activity uses jni 0.22 -> jni-sys 0.4),
 # so this adds no new package to resolve.
 jni-sys            = { version = "0.4.1" }
+# Needed to get the ANativeWindow* from winit's Window for the
+# GPU-independent status-screen blitter (software_screen.rs).  Already
+# in the workspace lockfile (winit 0.30 uses rwh 0.6), so no new package.
+raw-window-handle  = { version = "0.6" }
 
 [features]
 default = []
@@ -128,3 +132,9 @@ label = "Prototype Rust"
 
 [package.metadata.android.application.activity]
 name = "android.app.NativeActivity"
+# LOCK LANDSCAPE.  ndk-build 0.10 serializes this straight into
+# android:screenOrientation.  Without it the NativeActivity follows the
+# sensor and the game opens in portrait (the user's "not even in
+# landscape orientation" report).  sensorLandscape allows both landscape
+# directions while still forbidding portrait.
+orientation = "sensorLandscape"

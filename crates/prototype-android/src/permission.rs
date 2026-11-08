@@ -48,7 +48,9 @@ pub struct PermissionBridge {
 }
 
 #[cfg(target_os = "android")]
-pub use self::android::{all_files_access_granted, open_all_files_settings};
+pub use self::android::{
+    all_files_access_granted, force_landscape, open_all_files_settings,
+};
 
 #[cfg(target_os = "android")]
 mod android {
@@ -176,6 +178,48 @@ mod android {
                 return false;
             }
             granted
+        }
+    }
+
+    /// Force the Activity into sensor-landscape at runtime as a belt-and-
+    /// braces companion to the manifest's `android:screenOrientation`.
+    ///
+    /// `Activity.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE)`
+    /// is `void (I)` and the constant is `6`.  Called once from
+    /// `android_main`; a failure is logged and otherwise ignored — the
+    /// manifest attribute is the authoritative lock.
+    pub fn force_landscape(bridge: PermissionBridge) {
+        if bridge.activity == 0 {
+            return;
+        }
+        let Some(j) = attach(bridge.vm) else {
+            log::warn!("permission: could not attach to the Java VM for orientation");
+            return;
+        };
+        let activity = bridge.activity as jobject;
+        // SAFETY: `activity` is the process-lifetime global ref from
+        // android-activity; `GetObjectClass` returns a local ref we drop.
+        unsafe {
+            let cls = (j.f().v1_1.GetObjectClass)(j.env, activity);
+            if cls.is_null() {
+                j.clear_exception();
+                return;
+            }
+            let mid = j.method(cls, b"setRequestedOrientation\0", b"(I)V\0");
+            if mid.is_null() {
+                j.clear_exception();
+                (j.f().v1_1.DeleteLocalRef)(j.env, cls);
+                return;
+            }
+            let args = [jvalue { i: 6 }];
+            (j.f().v1_1.CallVoidMethodA)(j.env, activity, mid, args.as_ptr());
+            if j.exception_check() {
+                j.clear_exception();
+                log::warn!("permission: setRequestedOrientation threw");
+            } else {
+                log::info!("permission: locked orientation to sensor landscape");
+            }
+            (j.f().v1_1.DeleteLocalRef)(j.env, cls);
         }
     }
 

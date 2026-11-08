@@ -25,10 +25,20 @@ mould of cinnabar (Bedrock) and horizon (Minecraft Java): the APK ships
 `MANAGE_EXTERNAL_STORAGE` is a *special-access* permission: declaring it in
 the manifest grants nothing on Android 11+, hence the Settings hop.  The
 JNI bridge that does both the check (`Environment.isExternalStorageManager`)
-and the Settings intent lives in `src/permission.rs`.  The two screens are
-pre-rendered 360×640 RGBA8 textures (`assets/*.rgba`, a 5×7 bitmap font)
-presented through the existing fullscreen WGSL movie quad — no font, UI or
-widget crate is needed.
+and the Settings intent lives in `src/permission.rs`.  The five status
+screens (ALLOW, WAITING, BOOTING, RUNNING, ERROR) are pre-rendered
+**landscape 640×360** RGBA8 frames (`assets/screen_*.rgba`, a 5×7 bitmap
+font) — no font, UI or widget crate is needed.  They normally draw through
+the existing fullscreen WGSL movie quad; `software_screen` blits the same
+pixels straight into the `ANativeWindow` if GPU bring-up fails, so a
+broken Vulkan driver can never leave a black screen.
+
+The Activity is locked to `sensorLandscape` in both the generated manifest
+metadata and `AndroidManifest.xml`, and `permission::force_landscape` calls
+`Activity.setRequestedOrientation(6)` at startup as a runtime backstop.
+GPU bring-up and the engine boot are deferred out of `resumed()` onto a
+redraw and are panic-contained; failures show an on-screen ERROR screen
+with tap-to-retry instead of closing the app.
 
 ## Modules
 
@@ -36,8 +46,9 @@ widget crate is needed.
 | --- | --- | --- |
 | `asset_folder` | always | create / validate `Prototype Rust/` (unit-tested on every host) |
 | `game_files` | always | classify + canonically order game files (PROVEN PC mount order) |
-| `permission` | always (JNI impl Android-only) | all-files-access check + Settings deep link |
-| `permission_ui` | `winit-app` feature | the two pre-rendered setup screens |
+| `permission` | always (JNI impl Android-only) | all-files-access check + Settings deep link + landscape lock |
+| `permission_ui` | `winit-app` feature | the five landscape status screens |
+| `software_screen` | `winit-app` feature | GPU-free `ANativeWindow` status-screen fallback |
 | `app` | `winit-app` feature | shared winit handler: gate, folder, scan, auto-boot, render |
 | `activity` | `android-activity` feature **and** Android target | NativeActivity entry, logcat, JNI handles |
 
@@ -53,7 +64,8 @@ cargo apk build -p prototype-android --features android-activity
 
 Targets **API 30 / Android 11** minimum: `MANAGE_EXTERNAL_STORAGE`,
 `Environment.isExternalStorageManager()` and the per-app Settings deep link
-all start at Android 11.  cpal's AAudio backend also needs API 26+.
+all start at Android 11.  The CI APK is built WITHOUT `audio-cpal` (no
+Oboe/AAudio device stream) to keep startup on a single, stable path.
 
 | ABI | Rust triple | Status |
 | --- | --- | --- |
