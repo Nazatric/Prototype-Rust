@@ -84,7 +84,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: aarch64-linux-android      # arm64 phones — the requested target
+          - target: aarch64-linux-android      # arm64 / aarch64 phones (the original request)
+            abi: arm64-v8a
+            out: prototype-rs-permission-ui-arm64-debug.apk
+          - target: armv7-linux-androideabi    # 32-bit ARM phones (arm7)
+            abi: armeabi-v7a
+            out: prototype-rs-permission-ui-armv7-debug.apk
+          - target: x86_64-linux-android       # x86_64 Android / emulators
+            abi: x86_64
+            out: prototype-rs-permission-ui-x86_64-debug.apk
     steps:
       - uses: actions/checkout@v4
 
@@ -140,15 +148,18 @@ jobs:
           echo "Selected APK: $APK"
           echo "path=$APK" >> "$GITHUB_OUTPUT"
 
-      - name: Verify this really is the arm64 / all-files-access build
+      - name: Verify this really is a ${{ matrix.abi }} / all-files-access build
         run: |
           python3 - <<'PY'
           import os, zipfile
           apk = os.environ["APK_PATH"]
+          abi = os.environ["EXPECTED_ABI"]
           with zipfile.ZipFile(apk) as z:
               names = z.namelist()
-              assert any(n.startswith("lib/arm64-v8a/") for n in names), \
-                  "not an arm64 APK: " + repr([n for n in names if n.startswith("lib/")])
+              prefix = "lib/" + abi + "/"
+              libs = [n for n in names if n.startswith("lib/")]
+              assert any(n.startswith(prefix) for n in names), \
+                  "not a " + abi + " APK: " + repr(libs)
               manifest = z.read("AndroidManifest.xml")
               utf16 = "MANAGE_EXTERNAL_STORAGE".encode("utf-16-le")
               assert (b"MANAGE_EXTERNAL_STORAGE" in manifest
@@ -159,10 +170,11 @@ jobs:
               # integer constant, so the literal string is absent even
               # when the attribute is present.  The aapt dump below is
               # the authoritative check.
-          print("OK: arm64 native lib + MANAGE_EXTERNAL_STORAGE declared")
+          print("OK: " + abi + " native lib + MANAGE_EXTERNAL_STORAGE declared")
           PY
         env:
           APK_PATH: ${{ steps.apk.outputs.path }}
+          EXPECTED_ABI: ${{ matrix.abi }}
 
       - name: Verify the compiled manifest locks orientation to landscape
         run: |
@@ -180,22 +192,36 @@ jobs:
             fi
           fi
 
-      # No actions/upload-artifact step: this repo's Actions artifact
-      # storage quota is exhausted, and a release asset is the actual
-      # deliverable anyway (direct download, no login-gated artifact page).
+      # Also expose the APK on the RUN page.  This repo's Actions
+      # artifact quota was exhausted earlier, so it is explicitly
+      # non-fatal: the release asset below is always the real
+      # deliverable and is never blocked by artifact storage.
+      - name: Upload APK as a run artifact (best effort)
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.out }}
+          path: ${{ steps.apk.outputs.path }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
 
-      - name: Publish arm64 APK as a direct-download release asset
-        if: matrix.target == 'aarch64-linux-android'
+      - name: Publish ${{ matrix.abi }} APK as a direct-download release asset
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG=ci-apks
-          OUT=prototype-rs-permission-ui-arm64-debug.apk
+          OUT="${{ matrix.out }}"
           cp "${{ steps.apk.outputs.path }}" "$OUT"
-          gh release view "$TAG" >/dev/null 2>&1 || \
+          # Three matrix jobs run in parallel; make release creation
+          # idempotent instead of racing a single create.
+          for i in 1 2 3 4 5 6; do
+            if gh release view "$TAG" >/dev/null 2>&1; then break; fi
             gh release create "$TAG" \
               --title "Prototype Rust debug APKs (CI)" \
-              --notes "Installable, zipaligned, debug-signed arm64 APK built by the build-apk workflow. Requires Android 11 (API 30) or newer."
+              --notes "Installable, zipaligned, debug-signed per-ABI APKs built by the build-apk workflow: arm64-v8a (aarch64), armeabi-v7a (arm7), x86_64. Requires Android 11 (API 30) or newer." 2>/dev/null || true
+            sleep 3
+          done
           gh release upload "$TAG" "$OUT" --clobber
           echo "Direct download: https://github.com/${{ github.repository }}/releases/download/$TAG/$OUT"
 
