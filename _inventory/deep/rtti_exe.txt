@@ -1,2 +1,0 @@
-.?AV_com_error@@
-.?AVtype_info@@
