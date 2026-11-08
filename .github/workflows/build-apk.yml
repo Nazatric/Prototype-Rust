@@ -225,6 +225,30 @@ jobs:
           gh release upload "$TAG" "$OUT" --clobber
           echo "Direct download: https://github.com/${{ github.repository }}/releases/download/$TAG/$OUT"
 
+      # Private-repo release assets require a GitHub browser session, and
+      # the sandbox cannot reach release-assets.githubusercontent.com.
+      # Put ONE stripped APK into the branch itself so it is visible and
+      # directly downloadable in the workspace / file tree.  Pushing with
+      # GITHUB_TOKEN does not trigger another workflow run.
+      - name: Put a stripped APK in the branch (direct workspace download)
+        if: matrix.target == 'aarch64-linux-android'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          BRANCH="${{ github.head_ref || github.ref_name }}"
+          BUILT="${{ steps.apk.outputs.path }}"
+          git fetch --depth=1 origin "$BRANCH"
+          git checkout -B ci-apk-publish FETCH_HEAD
+          mkdir -p apk
+          cp "$BUILT" apk/prototype-rs-arm64-debug.apk
+          ls -lh apk/prototype-rs-arm64-debug.apk
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f apk/prototype-rs-arm64-debug.apk
+          git commit -m "CI: add installable stripped arm64 debug APK" || { echo "no APK change"; exit 0; }
+          git push origin "HEAD:refs/heads/$BRANCH"
+
   build-universal-apk:
     name: Universal APK (placeholder)
     runs-on: ubuntu-latest

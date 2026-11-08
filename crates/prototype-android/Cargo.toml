@@ -105,6 +105,13 @@ package_name = "com.nazatric.prototype_rs"
 package_label = "prototype-rs"
 apk_label = "Prototype Rust"
 
+# Strip DWARF from the native lib before packaging.  A dev-profile
+# libprototype_android.so is ~190 MB of debug info, which makes the APK
+# too big to download comfortably (and too big to store in git).  The
+# APK stays a normal debug-signed debug build; only symbols are removed.
+# ndk-build 0.10 implements this with NDK llvm-objcopy --strip-debug.
+strip = "strip"
+
 # SPECIAL ACCESS: declaring it is NOT enough — Android 11+ requires the
 # user to enable it in Settings.  The first-launch screen opens that page
 # (src/permission.rs); the app creates /sdcard/Prototype Rust/ ONLY after
