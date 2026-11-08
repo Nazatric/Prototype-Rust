@@ -1,0 +1,36 @@
+[package]
+name = "prototype-bin"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Command-line front-end for the prototype-rs workspace"
+
+[[bin]]
+name = "prototype-rs"
+path = "src/main.rs"
+
+[dependencies]
+prototype-common.workspace = true
+prototype-p3d.workspace = true
+prototype-rcf.workspace = true
+prototype-pe.workspace = true
+prototype-lua.workspace = true
+prototype-engine.workspace = true
+prototype-boot.workspace = true
+prototype-audio.workspace = true
+prototype-video.workspace = true
+prototype-render.workspace = true
+
+[dev-dependencies]
+prototype-stream.workspace = true
+prototype-input.workspace = true
+prototype-math.workspace = true
+
+[features]
+# M18: real audio playback (`play-audio`).  Forwards to the audio
+# crate's CPAL device edge; on Linux the backend links libasound
+# (build libasound from source into ~/.local if the dev headers are
+# absent — see PROGRESS.md block 7).
+audio-cpal = ["prototype-audio/audio-cpal"]

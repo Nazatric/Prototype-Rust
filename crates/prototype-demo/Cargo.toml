@@ -1,0 +1,43 @@
+[package]
+name = "prototype-demo"
+description = "Desktop demo binary for prototype-rs: the SAME winit App handler the Android activity runs, driven by winit's desktop backends (M26)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+name = "prototype_demo"
+path = "src/lib.rs"
+
+[[bin]]
+name = "demo-render"
+path = "src/bin/demo_render.rs"
+# The bin touches winit + the wgpu-backed App handler; it is only built
+# when the feature is on (`cargo run -p prototype-demo --features
+# render-wgpu`).  The feature-free lib (and its tests) always builds.
+required-features = ["render-wgpu"]
+
+[dependencies]
+prototype-android = { workspace = true }
+log               = "0.4"
+
+# Feature-gated: default builds of the workspace (and every cross-compile
+# audit) never compile winit/env_logger; only the explicit desktop demo
+# build does.
+winit      = { version = "0.30", optional = true, default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }
+env_logger = { version = "0.11", optional = true }
+
+[features]
+default = []
+# Turns on the desktop demo: shared App handler (prototype-android's
+# `winit-app`, which itself enables prototype-render's `render-wgpu`),
+# the winit desktop backends, and stderr logging.
+render-wgpu = [
+    "dep:winit",
+    "dep:env_logger",
+    "prototype-android/winit-app",
+]
