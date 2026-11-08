@@ -232,6 +232,76 @@ jobs:
       # workflow does not push to the branch on every run, because a bot
       # push creates an approval-required follow-up workflow run.
 
+  # One-shot helper, run with:
+  #   gh workflow run 410139473 --ref arena/8d27a532-prototype-rust
+  # Private-repo release assets need a GitHub login, and this sandbox cannot
+  # reach release-assets.githubusercontent.com.  This job copies all three
+  # ABI APKs into `apk/` so they are downloadable straight from the branch.
+  publish-apks-to-branch:
+    name: Copy all three APKs into apk/
+    if: github.event_name == 'workflow_dispatch'
+    needs: build-apk
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ci-apks
+      BRANCH: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - name: Download the three release assets
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/assets apk
+          gh release download "$TAG" --repo "${{ github.repository }}" \
+            --pattern 'prototype-rs-permission-ui-*.apk' \
+            --dir /tmp/assets --clobber
+          ls -lh /tmp/assets
+          cp /tmp/assets/prototype-rs-permission-ui-arm64-debug.apk  apk/prototype-rs-arm64-debug.apk
+          cp /tmp/assets/prototype-rs-permission-ui-armv7-debug.apk  apk/prototype-rs-armv7-debug.apk
+          cp /tmp/assets/prototype-rs-permission-ui-x86_64-debug.apk apk/prototype-rs-x86_64-debug.apk
+
+      - name: Verify each APK is signed and contains the right native ABI
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, zipfile
+          expected = {
+              "apk/prototype-rs-arm64-debug.apk":   "arm64-v8a",
+              "apk/prototype-rs-armv7-debug.apk":   "armeabi-v7a",
+              "apk/prototype-rs-x86_64-debug.apk":  "x86_64",
+          }
+          for path, abi in expected.items():
+              size = os.path.getsize(path)
+              assert size > 5_000_000, (path, "suspiciously small", size)
+              with zipfile.ZipFile(path) as z:
+                  names = z.namelist()
+                  libs = [n for n in names if n.startswith("lib/%s/" % abi) and n.endswith(".so")]
+                  assert libs, (path, "missing lib/%s/" % abi, names[:20])
+                  sigs = [n for n in names if n.startswith("META-INF/") and n.endswith((".RSA", ".SF", ".MF"))]
+                  assert len(sigs) >= 3, (path, "not signed", sigs)
+                  assert "AndroidManifest.xml" in names
+              print("OK %-42s %10d bytes  lib/%s/" % (path, size, abi))
+          PY
+
+      - name: Commit and push only when the APKs changed
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f apk/*.apk
+          if git diff --cached --quiet; then
+            echo "APKs are already up to date in the branch; nothing to push."
+            exit 0
+          fi
+          git commit -m "CI: add installable arm64, armv7 and x86_64 APKs [skip ci]"
+          git push origin "HEAD:refs/heads/$BRANCH"
+          echo "Published:"
+          git ls-tree -r --long HEAD -- apk/
+
   build-universal-apk:
     name: Universal APK (placeholder)
     runs-on: ubuntu-latest
