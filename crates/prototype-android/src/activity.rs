@@ -10,14 +10,16 @@
 //! boot, wgpu surface + pipeline bring-up, the redraw loop, touch/mouse/
 //! keyboard input — lives in [`crate::app`] and runs unchanged on the
 //! desktop demo (`prototype-demo`'s `demo-render` bin).  This module only
-//! supplies the three things that genuinely cannot leave Android:
+//! supplies the things that genuinely cannot leave Android:
 //!
 //! 1. the logcat sink ([`init_logging`]);
 //! 2. the exported `android_main` symbol (unmangled, Rust-ABI —
 //!    android-activity 0.6's contract; no proc-macro helper exists in
 //!    0.6, the old `#[android_activity::main]` came from 0.5-era
 //!    crates);
-//! 3. winit's Android event-loop builder (`with_android_app`) — winit
+//! 3. the raw JNI handles (`vm_as_ptr` / `activity_as_ptr`) that the
+//!    first-launch all-files-access gate needs;
+//! 4. winit's Android event-loop builder (`with_android_app`) — winit
 //!    owns the event loop on Android (its `android-native-activity`
 //!    backend wraps android-activity's poll loop — the two must never
 //!    be driven separately).
@@ -42,8 +44,8 @@ use android_logger::Config;
 use winit::event_loop::EventLoop;
 use winit::platform::android::EventLoopBuilderExtAndroid;
 
-use crate::app::{scan_or_setup, App, AppState};
-use crate::game_files;
+use crate::app::{App, AppState};
+use crate::permission::PermissionBridge;
 
 /// Install the logcat sink tagged `prototype-rs`.
 pub fn init_logging(app: &AndroidApp) {
@@ -61,24 +63,29 @@ pub fn android_main(app: AndroidApp) {
     init_logging(&app);
     log::info!("prototype-rs native activity starting (loader-style, no bundled assets)");
 
+    // Capture the JNI handles BEFORE `with_android_app` consumes the app.
+    // Both remain valid for the whole process lifetime.
+    let bridge = PermissionBridge {
+        vm: app.vm_as_ptr() as usize,
+        activity: app.activity_as_ptr() as usize,
+    };
+
     let folder = crate::asset_folder::default_folder();
-    // Pre-loop scan only for immediate logcat visibility; the App gets
-    // the result handed over (no double scan) and re-scans on every
-    // resume from here on.
-    let state = scan_or_setup(&folder);
     log::info!("asset folder: {}", folder.display());
-    match &state {
-        AppState::Ready(set) => log::info!("ready: {}", game_files::missing_summary(set)),
-        AppState::Setup { last_error, .. } => log::warn!(
-            "setup: waiting for game files{}",
-            last_error
-                .as_deref()
-                .map(|e| format!(" ({e})"))
-                .unwrap_or_default()
-        ),
-    }
+
+    // Deliberately do NOT scan (and especially do NOT create the folder)
+    // before the all-files-access grant: `resumed()` runs the permission
+    // gate first, creates the folder only after the grant, and re-scans
+    // on every app entry so the game boots automatically once files exist.
+    let state = AppState::Setup {
+        folder: folder.clone(),
+        last_error: None,
+    };
+    log::info!("setup: waiting for the all-files-access grant (first-launch UI)");
 
     let mut app_h = App::with_state(folder.clone(), state);
+    app_h.set_permission_bridge(bridge);
+
     let event_loop: EventLoop<()> = EventLoop::with_user_event()
         .with_android_app(app)
         .build()

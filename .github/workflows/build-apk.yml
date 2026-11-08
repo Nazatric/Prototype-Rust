@@ -4,10 +4,10 @@
 # Android SDK/NDK), so the workflow is the APK factory.
 #
 # Pipeline:
-#   1. test-linux      — full workspace test suite + a host sanity check of
-#                        the android crate (default features, Linux host).
-#   2. build-apk       — per-ABI debug APK (aarch64 / armv7 / x86_64).
-#   3. universal-apk   — placeholder; enabled once per-ABI builds are green.
+#   1. test-linux      — full workspace test suite + host sanity checks.
+#   2. build-apk       — arm64 (aarch64) DEBUG APK, signed + zipaligned,
+#                        with the first-launch all-files-access UI.
+#   3. build-universal — placeholder (disabled).
 
 name: build-apk
 
@@ -16,6 +16,12 @@ on:
     branches: [main, master]
   pull_request:
   workflow_dispatch:
+
+# Needed so the arm64 job can attach the installable APK to a release
+# (a plain Actions artifact download is login-gated; a release asset is not).
+permissions:
+  contents: write
+  actions: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -31,6 +37,13 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # cpal's Linux backend links libasound — ubuntu-latest has no alsa.pc
+      # by default, so alsa-sys' build script panics without these headers.
+      - name: Install ALSA dev headers (audio-cpal feature)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+
       - name: Workspace test suite
         run: cargo test --workspace --locked
 
@@ -40,24 +53,24 @@ jobs:
       - name: Audio device/content edge suite (feature gate, device tests skip device-less)
         run: cargo test -p prototype-android --features audio-cpal --locked
 
+      # `check` (not `test`): the desktop winit backends would need X11
+      # dev libs at LINK time on the runner; a compile is enough for the
+      # shared App + setup-screen code.
+      - name: First-launch UI + shared App compile on the host
+        run: cargo check -p prototype-android --features winit-app --locked
+
       - name: Android crate compiles on the host (default features)
         run: cargo check -p prototype-android --locked
 
       - name: wgpu render loop compiles (feature gate, no GPU needed to check)
         run: cargo check -p prototype-render --features render-wgpu --locked
 
-      # M26: the desktop demo bin (same shared App handler the Android
-      # activity runs, driven by winit's desktop backends).  Compiles
-      # without a display; the user runs it locally for the first real
-      # GPU proof.  Also compile-checks prototype-android's `winit-app`
-      # feature (the shared handler) on the host.
       - name: Desktop demo bin compiles (feature gate, no display needed)
         run: cargo check -p prototype-demo --features render-wgpu --locked
 
       # The FULL glue (winit event loop + wgpu pipelines + NativeActivity
-      # entry) compiles for the real Android target WITHOUT an NDK —
-      # `check` never links.  Proven in-sandbox on 2026-11-04; this gate
-      # keeps it true.
+      # entry + JNI permission gate) compiles for the real Android target
+      # WITHOUT an NDK — `check` never links.
       - name: Android glue compiles for aarch64 (feature on, no NDK needed to check)
         run: |
           rustup target add aarch64-linux-android
@@ -71,9 +84,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: aarch64-linux-android      # arm64 phones — the primary target
-          - target: armv7-linux-androideabi    # 32-bit phones
-          - target: x86_64-linux-android       # emulators
+          - target: aarch64-linux-android      # arm64 phones — the requested target
     steps:
       - uses: actions/checkout@v4
 
@@ -106,13 +117,6 @@ jobs:
           # ANDROID_HOME is a RUNNER image env var — it is NOT visible to
           # the ${{ env.* }} context, so the NDK root is exported here.
           export ANDROID_NDK_ROOT="$ANDROID_HOME/ndk/27.0.12077973"
-          # Block 58: audio-cpal rides the build — cpal's oboe backend
-          # needs the NDK at build-script time, and THIS job is the only
-          # place the NDK exists.  The APK then carries the movie +
-          # gameplay audio device edges (blocks 55/57) and the clip
-          # registry (block 58).  If the oboe build fails, this log is
-          # the diagnosis — the host-side audit already covers everything
-          # else (the block-55/57 scripts/m55_android_audit.sh cells).
           cargo apk build -p prototype-android \
             --features android-activity,audio-cpal \
             --target ${{ matrix.target }}
@@ -120,11 +124,35 @@ jobs:
       - name: Locate APK
         id: apk
         run: |
-          # cargo-apk's output layout changed across versions (…/android/
-          # app/, …/apk/) — search instead of hardcoding one.
-          APK=$(find target -type f -name '*.apk' | head -n1)
-          if [ -z "$APK" ]; then echo "no APK produced" >&2; exit 1; fi
+          # cargo-apk writes an UNSIGNED *-unaligned.apk intermediate next
+          # to the final zipaligned + debug-signed .apk.  `find | head -n1`
+          # used to pick the intermediate, which Android rejects as an
+          # invalid package.  Exclude it and verify the signature.
+          APK=$(find target -type f -name '*.apk' ! -name '*-unaligned.apk' -print -quit)
+          if [ -z "$APK" ]; then echo "no signed APK produced" >&2; exit 1; fi
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -print -quit)
+          if [ -n "$APKSIGNER" ]; then "$APKSIGNER" verify --verbose "$APK"; fi
+          echo "Selected APK: $APK"
           echo "path=$APK" >> "$GITHUB_OUTPUT"
+
+      - name: Verify this really is the arm64 / all-files-access build
+        run: |
+          python3 - <<'PY'
+          import os, zipfile
+          apk = os.environ["APK_PATH"]
+          with zipfile.ZipFile(apk) as z:
+              names = z.namelist()
+              assert any(n.startswith("lib/arm64-v8a/") for n in names), \
+                  "not an arm64 APK: " + repr([n for n in names if n.startswith("lib/")])
+              manifest = z.read("AndroidManifest.xml")
+              utf16 = "MANAGE_EXTERNAL_STORAGE".encode("utf-16-le")
+              assert (b"MANAGE_EXTERNAL_STORAGE" in manifest
+                      or utf16 in manifest), \
+                  "MANAGE_EXTERNAL_STORAGE is missing from the generated manifest"
+          print("OK: arm64 native lib + MANAGE_EXTERNAL_STORAGE declared")
+          PY
+        env:
+          APK_PATH: ${{ steps.apk.outputs.path }}
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -133,9 +161,21 @@ jobs:
           path: ${{ steps.apk.outputs.path }}
           if-no-files-found: error
 
-  # Placeholder so the pipeline shape is visible from day one; flips on
-  # after the per-ABI matrix proves green (merging fat APK by hand or via
-  # apkanalyzer is then mechanical).
+      - name: Publish arm64 APK as a direct-download release asset
+        if: matrix.target == 'aarch64-linux-android'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG=ci-apks
+          OUT=prototype-rs-permission-ui-arm64-debug.apk
+          cp "${{ steps.apk.outputs.path }}" "$OUT"
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" \
+              --title "Prototype Rust debug APKs (CI)" \
+              --notes "Installable, zipaligned, debug-signed arm64 APK built by the build-apk workflow. Requires Android 11 (API 30) or newer."
+          gh release upload "$TAG" "$OUT" --clobber
+          echo "Direct download: https://github.com/${{ github.repository }}/releases/download/$TAG/$OUT"
+
   build-universal-apk:
     name: Universal APK (placeholder)
     runs-on: ubuntu-latest

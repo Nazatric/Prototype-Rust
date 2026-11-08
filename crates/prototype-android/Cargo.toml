@@ -50,6 +50,10 @@ cpal              = { version = "0.18", optional = true, default-features = fals
 android-activity   = { version = "0.6", features = ["native-activity"], optional = true }
 android_logger     = { version = "0.14" }
 winit              = { version = "0.30", optional = true, default-features = false, features = ["rwh_06", "android-native-activity"] }
+# Raw JNI vtable for the first-launch all-files-access gate.  Already in
+# the workspace lockfile (android-activity uses jni 0.22 -> jni-sys 0.4),
+# so this adds no new package to resolve.
+jni-sys            = { version = "0.4.1" }
 
 [features]
 default = []
@@ -90,12 +94,33 @@ prototype-lua = { workspace = true }
 # MUST be android.app.NativeActivity — the glue is android-activity's
 # native-activity backend (block 9/19), which that class loads.
 [package.metadata.android]
+# cargo-apk 0.10 reads `package` (older keys are kept for compatibility
+# with other cargo-apk versions; unknown TOML keys are ignored).
+package = "com.nazatric.prototype_rs"
 package_name = "com.nazatric.prototype_rs"
 package_label = "prototype-rs"
 apk_label = "Prototype Rust"
 
+# SPECIAL ACCESS: declaring it is NOT enough — Android 11+ requires the
+# user to enable it in Settings.  The first-launch screen opens that page
+# (src/permission.rs); the app creates /sdcard/Prototype Rust/ ONLY after
+# the grant.  Without this declaration the Settings page shows no toggle.
+[[package.metadata.android.uses_permission]]
+name = "android.permission.MANAGE_EXTERNAL_STORAGE"
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.READ_EXTERNAL_STORAGE"
+max_sdk_version = 32
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.WRITE_EXTERNAL_STORAGE"
+max_sdk_version = 29
+
 [package.metadata.android.sdk]
-min_sdk_version = 24
+# API 30+: MANAGE_EXTERNAL_STORAGE / Environment.isExternalStorageManager
+# and the per-app Settings deep link all start at Android 11.  cpal's
+# Android backend also links -laaudio (available from API 26 upward).
+min_sdk_version = 30
 target_sdk_version = 34
 
 [package.metadata.android.application]

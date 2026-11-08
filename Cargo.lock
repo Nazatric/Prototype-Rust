@@ -1665,6 +1665,7 @@ dependencies = [
  "android-activity",
  "android_logger",
  "cpal",
+ "jni-sys 0.4.1",
  "log",
  "pollster",
  "prototype-audio",

@@ -4,16 +4,21 @@
 //!
 //! The APK ships **no game assets**.  On first launch the app:
 //!
-//! 1. Requests `MANAGE_EXTERNAL_STORAGE` (all-files-access) so it can read
-//!    the user's own game files wherever they were copied.
-//! 2. Creates `/sdcard/Prototype Rust/` (= `/storage/emulated/0/Prototype Rust/`).
-//! 3. The user copies their OWN legally-owned files into that folder:
-//!    `Prototype.exe`, `prototypeenginef.dll`, `*.rcf`, `*.p3d`, `scripts/`...
-//! 4. [`asset_folder`] bootstraps and validates the folder.
-//! 5. [`game_files`] discovers and orders everything the engine needs.
-//! 6. The engine boots from the discovered set (see `activity` for the
-//!    NativeActivity entry point; the render loop arrives with the wgpu
-//!    integration in the `prototype-render` crate).
+//! 1. Shows a first-launch screen saying **ALLOW ALL FILE ACCESS**; a tap
+//!    opens Android's per-app all-files-access Settings page
+//!    ([`permission`]).  `MANAGE_EXTERNAL_STORAGE` is declared in the APK
+//!    manifest — declaring it alone grants nothing, hence the Settings hop.
+//! 2. ONLY AFTER the grant does it create `/sdcard/Prototype Rust/`
+//!    (= `/storage/emulated/0/Prototype Rust/`), via [`asset_folder`].
+//! 3. A second screen tells the user to copy their OWN legally-owned files
+//!    into that folder: `Prototype.exe`, `prototypeenginef.dll`, `*.rcf`,
+//!    `*.p3d`, `scripts/`...
+//! 4. On the NEXT app entry/resume, [`game_files`] discovers and orders
+//!    everything the engine needs and the game boots AUTOMATICALLY — there
+//!    is no Play button and no extra tap ([`app`], winit `resumed`).
+//! 5. The engine renders through the wgpu edge in `prototype-render`
+//!    (same fullscreen quad used by the setup screens and boot movie).
+//!    See `activity` for the NativeActivity entry point.
 //!
 //! # Testability
 //!
@@ -47,7 +52,14 @@ pub mod mission;
 pub mod movie;
 pub mod music_graph;
 pub mod nis;
+pub mod permission;
 pub mod touch;
+
+// The two pre-rendered first-launch screens (RGBA8 textures).  Only the
+// shared winit App needs them; the desktop demo compiles the module too
+// so `cargo test --workspace` exercises the pixel-size assertions.
+#[cfg(feature = "winit-app")]
+pub mod permission_ui;
 
 // The shared winit ApplicationHandler: gated by `winit-app` only (no
 // target gate) — it compiles and is unit-tested on desktop hosts too,
@@ -80,6 +92,7 @@ pub use movie::{movie_audio_edge_should_close, MovieAudioEdge};
 #[cfg(feature = "audio-cpal")]
 pub use gameplay_audio::{gameplay_audio_edge_should_cut, GameplayAudioEdge};
 pub use touch::{TouchMapper, TouchPhase, TouchPoint};
+pub use permission::PermissionBridge;
 
 #[cfg(feature = "winit-app")]
 pub use app::{map_key, scan_or_setup, App, AppState};

@@ -92,6 +92,8 @@ use crate::movie::{find_boot_movie, MoviePlayerState};
 #[cfg(feature = "audio-cpal")]
 use crate::movie::MovieAudioEdge;
 use crate::touch::{TouchMapper, TouchMapped, TouchPhase, TouchPoint};
+use crate::permission::PermissionBridge;
+use crate::permission_ui::{screen as permission_screen_pixels, PermissionScreenKind};
 // Block 57: the GAMEPLAY audio DEVICE edge — the persistent-lifetime
 // counterpart of the movie edge, opened over the AudioOut ring.
 #[cfg(feature = "audio-cpal")]
@@ -452,6 +454,19 @@ pub struct AudioSeamApply {
     pub failures: Vec<(&'static str, String)>,
 }
 
+/// GPU state of one of the two first-launch setup screens.
+///
+/// It is just a movie-quad draw: one RGBA8 texture (the pre-rendered
+/// bitmap-font screen), one bind group, one pipeline.  Keeping the
+/// texture/view alive here is what keeps the bind group valid.
+struct PermissionScreen {
+    quad: VideoQuad,
+    bind_group: wgpu::BindGroup,
+    kind: PermissionScreenKind,
+    _texture: wgpu::Texture,
+    _view: wgpu::TextureView,
+}
+
 /// The whole app state winit drives — shared by the Android activity
 /// and the desktop `demo-render` bin.
 pub struct App {
@@ -467,7 +482,15 @@ pub struct App {
     /// The winit window (None while suspended / not yet created).
     window: Option<Arc<Window>>,
     /// The wgpu renderer (None while suspended / before first boot).
+    /// Also backs the first-launch setup screens, so a resume that boots
+    /// the game reuses the very same device/surface.
     renderer: Option<Renderer>,
+    /// Raw JNI handles from `android_activity::AndroidApp` (integers so
+    /// this struct still compiles on desktop).  `None` off Android.
+    permission_bridge: Option<PermissionBridge>,
+    /// The setup screen currently owning every frame, if any.  While
+    /// `Some`, the world/movie render path is skipped entirely.
+    permission_screen: Option<PermissionScreen>,
     /// Pipelines created from the boot report (per pair).
     pipelines: Vec<GpuPipeline>,
     /// Block 34: the DLL `default` WORLD pipeline — what world geometry
@@ -702,6 +725,8 @@ impl App {
             window_attrs: Window::default_attributes(),
             window: None,
             renderer: None,
+            permission_bridge: None,
+            permission_screen: None,
             pipelines: Vec::new(),
             world_pipeline: None,
             world_wvp_register: 0,
@@ -754,6 +779,81 @@ impl App {
             #[cfg(feature = "audio-cpal")]
             gameplay_audio: None,
         }
+    }
+
+    /// Hand the Android JNI handles to the app (called once by
+    /// `android_main` before the event loop starts).  The type is just
+    /// two integers, so the shared handler still compiles on desktop.
+    pub fn set_permission_bridge(&mut self, bridge: PermissionBridge) {
+        self.permission_bridge = Some(bridge);
+    }
+
+    /// Drop the setup screen's GPU state (the renderer itself is kept —
+    /// the game boot reuses that device/surface).
+    #[allow(dead_code)]
+    fn clear_permission_screen(&mut self) {
+        if self.permission_screen.take().is_some() {
+            log::info!("permission: setup screen dismissed");
+        }
+    }
+
+    /// Show one of the two first-launch screens, creating the window and
+    /// wgpu surface if the app has not done so yet.  This is what makes
+    /// "ALLOW ALL FILE ACCESS" actually visible instead of a logcat line.
+    #[allow(dead_code)]
+    fn install_permission_screen(
+        &mut self,
+        kind: PermissionScreenKind,
+        event_loop: &ActiveEventLoop,
+    ) {
+        if self.window.is_none() {
+            match event_loop.create_window(self.window_attrs.clone()) {
+                Ok(w) => {
+                    log::info!("permission: window created for setup screen");
+                    self.window = Some(Arc::new(w));
+                }
+                Err(e) => {
+                    log::error!("permission: window creation failed: {e}");
+                    return;
+                }
+            }
+        }
+        let Some(window) = self.window.clone() else {
+            return;
+        };
+        if self.renderer.is_none() {
+            let size = window.inner_size();
+            let (w, h) = (size.width.max(1), size.height.max(1));
+            match pollster::block_on(Renderer::new(window.clone(), w, h)) {
+                Ok(r) => self.renderer = Some(r),
+                Err(e) => {
+                    log::error!("permission: renderer creation failed: {e}");
+                    return;
+                }
+            }
+        }
+        let (rgba, tw, th) = permission_screen_pixels(kind);
+        let renderer = self
+            .renderer
+            .as_ref()
+            .expect("renderer installed just above");
+        let texture = renderer.create_video_texture(tw, th, "first-launch ui");
+        if let Err(e) = renderer.upload_video_frame(&texture, rgba) {
+            log::error!("permission: screen upload failed: {e}");
+            return;
+        }
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let quad = renderer.create_video_quad(renderer.surface_format());
+        let bind_group = renderer.create_video_bind_group(&quad, &view);
+        self.permission_screen = Some(PermissionScreen {
+            quad,
+            bind_group,
+            kind,
+            _texture: texture,
+            _view: view,
+        });
+        log::info!("permission: showing {kind:?} screen");
+        window.request_redraw();
     }
 
     /// Override the attributes of the window created on first resume
@@ -1935,12 +2035,18 @@ impl App {
         // 2. The GPU edge: surface + device on the window.
         let size = window.inner_size();
         let (w, h) = (size.width.max(1), size.height.max(1));
-        let mut renderer = match pollster::block_on(Renderer::new(window.clone(), w, h)) {
-            Ok(r) => r,
-            Err(e) => {
-                log::error!("renderer creation failed: {e} — staying in setup-like state");
-                return;
-            }
+        // A first-launch setup screen may already own a device + Surface
+        // for THIS window.  Reuse it: creating a second Surface on the
+        // same NativeWindow is unnecessary and can invalidate the first.
+        let mut renderer = match self.renderer.take() {
+            Some(r) => r,
+            None => match pollster::block_on(Renderer::new(window.clone(), w, h)) {
+                Ok(r) => r,
+                Err(e) => {
+                    log::error!("renderer creation failed: {e} — staying in setup-like state");
+                    return;
+                }
+            },
         };
         let format = renderer.surface_format();
 
@@ -2417,6 +2523,9 @@ impl App {
             log::info!("tearing down GPU state (surface is invalid across pause)");
         }
         self.renderer = None;
+        // The setup screen's bind group references the dead device; it
+        // must not survive a pause (resumed() re-installs it if needed).
+        self.permission_screen = None;
         self.pipelines.clear();
         self.world_pipeline = None;
         self.batches.clear();
@@ -2464,12 +2573,61 @@ impl App {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        // --- Android first-launch gate ---------------------------------
+        // MANAGE_EXTERNAL_STORAGE is a SPECIAL-ACCESS permission: on
+        // API 30+ declaring it grants nothing, the user must enable it
+        // in Settings.  Until then we show the ALLOW screen and never
+        // touch shared storage.  resumed() runs again on every return
+        // from Settings, so the flow is: allow -> folder -> files ->
+        // next entry boots automatically (no Play button).
+        #[cfg(target_os = "android")]
+        {
+            if let Some(bridge) = self.permission_bridge {
+                if !crate::permission::all_files_access_granted(bridge) {
+                    log::info!(
+                        "permission: all-files access NOT granted — showing ALLOW screen"
+                    );
+                    self.install_permission_screen(
+                        PermissionScreenKind::Grant,
+                        event_loop,
+                    );
+                    return;
+                }
+                // ONLY NOW, after the grant, create the asset folder.
+                match crate::asset_folder::ensure_folder(&self.folder) {
+                    Ok(()) => log::info!(
+                        "permission: folder created after grant: {}",
+                        self.folder.display()
+                    ),
+                    Err(e) => log::warn!(
+                        "permission: folder creation failed after grant: {e}"
+                    ),
+                }
+            }
+            self.clear_permission_screen();
+        }
+
         log::info!("lifecycle: resume — re-scanning asset folder");
         self.state = scan_or_setup(&self.folder);
         if matches!(self.state, AppState::Setup { .. }) {
-            // Files not (yet) usable — no render loop without them.
-            self.teardown();
-            return;
+            #[cfg(target_os = "android")]
+            {
+                // Folder exists but the game files have not been copied
+                // in yet.  Show where to put them; the NEXT resume
+                // re-scans and boots with no extra tap.
+                log::info!("setup: waiting for .rcf files — showing folder screen");
+                self.install_permission_screen(
+                    PermissionScreenKind::Waiting,
+                    event_loop,
+                );
+                return;
+            }
+            #[cfg(not(target_os = "android"))]
+            {
+                // Desktop demo keeps the original headless setup state.
+                self.teardown();
+                return;
+            }
         }
         if self.window.is_none() {
             match event_loop.create_window(self.window_attrs.clone()) {
@@ -2508,6 +2666,21 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
+                // --- first-launch setup screen owns the frame ----------
+                // While a setup screen is up there is no boot report, no
+                // movie and no world: present the pre-rendered RGBA UI
+                // through the same fullscreen quad and skip everything
+                // below.  Disjoint field borrows (screen & renderer).
+                if let (Some(screen), Some(r)) =
+                    (self.permission_screen.as_ref(), self.renderer.as_mut())
+                {
+                    if let Err(e) =
+                        r.render_video_frame(&screen.quad, &screen.bind_group)
+                    {
+                        log::warn!("permission: setup screen present failed: {e}");
+                    }
+                    return;
+                }
                 // --- block 55: the audio edge's tail drain -------------
                 //     BEFORE the renderer borrow (the check touches no
                 //     GPU state).  After the movie is gone (ended, or a
@@ -3127,6 +3300,24 @@ impl ApplicationHandler for App {
                 }
             },
             WindowEvent::Touch(t) => {
+                // First-launch gate: ANY tap on the ALLOW screen opens
+                // Android's all-files-access Settings page.  On the
+                // waiting screen a tap is deliberately ignored — the
+                // next app entry (resume) re-scans and boots by itself.
+                #[cfg(target_os = "android")]
+                {
+                    if let Some(screen) = &self.permission_screen {
+                        if t.phase == WinitTouchPhase::Started
+                            && screen.kind == PermissionScreenKind::Grant
+                        {
+                            if let Some(bridge) = self.permission_bridge {
+                                log::info!("permission: tapped ALLOW — opening Settings");
+                                crate::permission::open_all_files_settings(bridge);
+                            }
+                        }
+                        return;
+                    }
+                }
                 // Block 54: a touch while the boot movie plays skips it
                 // (finger-down is the natural mobile skip gesture).
                 if t.phase == WinitTouchPhase::Started {
