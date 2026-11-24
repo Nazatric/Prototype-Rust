@@ -824,6 +824,13 @@ pub mod nis;
 /// world index (M25, block 18; PROVEN corpus-wide on the real archive).
 pub mod world;
 
+/// Block 105 — the world-index CACHE: the built index (plain data) is
+/// written once to the game folder and read back in milliseconds on
+/// every later boot; the fingerprint binds it to the exact corpus.
+pub mod index_cache;
+
+pub use index_cache::{index_fingerprint, read_index_cache, write_index_cache};
+
 /// Block 87 — REAL `0x0012_1000` animation-track decoder (rebuild of
 /// the recycle-lost blocks 83/85, re-derived and validated live:
 /// 634/634 tracks, exact 533 PTRN / 67 CAM / 34 EXP census).  Decodes

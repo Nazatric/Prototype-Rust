@@ -806,8 +806,140 @@ enum BootPhase {
 /// archive decompress passes + the movie scan.  Panics are CAUGHT and
 /// reported through the channel — a worker death must surface as a
 /// `Failed` phase, not a dead process or a silent hang.
-fn cpu_boot_work(set: GameFileSet, tx: mpsc::Sender<Result<CpuBootArtifacts, String>>) {
-    boot_log::stage("cpu: shader prep (prepare_programs)");
+/// Block 105: the CACHED + FILTERED + PARALLEL world index.
+///
+/// * FILTERED — audio/woi wave banks are pure sound: 85% of the
+///   block-104 device pass's members came from them and none can hold
+///   a placement.  They stay on disk for the audio paths (hash lookups
+///   on demand); they leave the index pass.
+/// * PARALLEL — `lean_index_archives` splits the remaining archives
+///   across the CPU count, merged in archive order (identical to a
+///   sequential scan).
+/// * CACHED — `world-index.cache` next to the archives stores the
+///   built index bound to a corpus fingerprint (file names + lengths +
+///   scan options); boot 2+ reads it back in milliseconds.  Any
+///   corpus/options change invalidates it and rebuilds honestly.
+///
+/// Still lean (block 104): NO mesh decode — the per-frame stream owns
+/// geometry.  Returns (world index report, always-empty mesh report, a
+/// one-line note for the boot log).
+fn index_world_cached(
+    set: &GameFileSet,
+    opts: prototype_p3d::world::ScanOptions,
+) -> (crate::meshes::WorldScanReport, crate::meshes::MeshLoadReport, String) {
+    let index_paths: Vec<PathBuf> = set
+        .rcf_archives
+        .iter()
+        .filter(|p| {
+            match p.file_stem().map(|s| s.to_string_lossy().to_string()) {
+                Some(stem) => {
+                    let worthy = crate::game_files::index_worthy_archive(&stem);
+                    if !worthy {
+                        let line = format!(
+                            "index: skip {} (sound bank — no world data)",
+                            p.display()
+                        );
+                        log::info!("{line}");
+                        crate::boot_log::bootlog(&line);
+                    }
+                    worthy
+                }
+                None => true,
+            }
+        })
+        .cloned()
+        .collect();
+    // Fingerprint over the FULL archive list — skipped sound banks are
+    // still corpus identity (swapping one must invalidate the cache).
+    let lens: Vec<(String, u64)> = set
+        .rcf_archives
+        .iter()
+        .map(|p| {
+            (
+                p.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+                p.metadata().map(|m| m.len()).unwrap_or(0),
+            )
+        })
+        .collect();
+    let fp = prototype_p3d::index_fingerprint(&lens, opts);
+    let cache_path = set
+        .rcf_archives
+        .first()
+        .and_then(|p| p.parent())
+        .map(|d| d.join("world-index.cache"));
+    if let (Some(cache), Some(_)) = (&cache_path, index_paths.first()) {
+        let started = std::time::Instant::now();
+        if let Some(cached) = prototype_p3d::read_index_cache(cache, fp) {
+            let mut scan = crate::meshes::WorldScanReport::default();
+            scan.members_scanned = cached.member_count;
+            scan.archives_opened = cached.archive_count;
+            let line = format!(
+                "index: CACHE HIT — {} member(s) in {:.2}s",
+                cached.member_count,
+                started.elapsed().as_secs_f32()
+            );
+            log::info!("{line}");
+            crate::boot_log::bootlog(&line);
+            return (scan_with_index(scan, cached.index), crate::meshes::MeshLoadReport::default(), "cache hit".to_string());
+        }
+    }
+    if index_paths.is_empty() {
+        return (
+            crate::meshes::WorldScanReport::default(),
+            crate::meshes::MeshLoadReport::default(),
+            "no index-worthy archives".to_string(),
+        );
+    }
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(2);
+    let started = std::time::Instant::now();
+    let world = crate::meshes::lean_index_archives(&index_paths, opts, workers);
+    let skipped = set.rcf_archives.len() - index_paths.len();
+    let elapsed = started.elapsed().as_secs_f32();
+    let mut note = format!(
+        "built fresh on {workers} worker(s), {elapsed:.1}s, {} sound bank(s) skipped",
+        skipped
+    );
+    if let Some(cache) = &cache_path {
+        match prototype_p3d::write_index_cache(
+            cache,
+            fp,
+            world.members_scanned,
+            world.archives_opened,
+            &world.index,
+        ) {
+            Ok(()) => {
+                let bytes = std::fs::metadata(cache).map(|m| m.len()).unwrap_or(0);
+                let line = format!(
+                    "index: cache written ({} bytes) — boot 2+ skips this pass",
+                    bytes
+                );
+                log::info!("{line}");
+                crate::boot_log::bootlog(&line);
+            }
+            Err(e) => {
+                note.push_str(&format!(", cache write FAILED (non-fatal): {e}"));
+                log::warn!("index cache write failed (non-fatal): {e}");
+            }
+        }
+    }
+    (world, crate::meshes::MeshLoadReport::default(), note)
+}
+
+/// Swap the loaded index into a scan report without losing the honest
+/// counters (cache-hit path).
+fn scan_with_index(
+    mut scan: crate::meshes::WorldScanReport,
+    index: prototype_p3d::world::WorldIndex,
+) -> crate::meshes::WorldScanReport {
+    scan.index = index;
+    scan
+}
+
+fn cpu_boot_work(set: GameFileSet, tx: mpsc::Sender<Result<CpuBootArtifacts, String>>) {    boot_log::stage("cpu: shader prep (prepare_programs)");
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let report = prepare_programs(&set);
         log::info!("{}", boot_summary(&report));
@@ -821,34 +953,29 @@ fn cpu_boot_work(set: GameFileSet, tx: mpsc::Sender<Result<CpuBootArtifacts, Str
         ));
         let world_plan = report.world.clone();
 
-        boot_log::stage("cpu: world archive index (LEAN — no mesh decode)");
-        // Block 104: max_meshes = 0.  The block-103 boot decoded meshes
-        // here and NEVER RETURNED on the user's phone: pass 1 held every
-        // archive byte in RAM (~2 GB corpus) and decompressed everything.
-        // The lean boot indexes the world member-by-member (a few MB
-        // peak) and DEFERS all geometry to the per-frame streaming —
-        // block 44's design was built for exactly this.
-        let (scan, world) = crate::meshes::collect_meshes_near(
-            &set.rcf_archives,
-            [0.0, 0.0, 0.0],
-            0,
+        boot_log::stage("cpu: world archive index (LEAN, parallel, cached)");
+        // Block 105: filtered (audio/woi wave banks out — they hold no
+        // world data), parallel (one worker per archive chunk), and
+        // cached (world-index.cache next to the archives — boot 2+
+        // skips the pass entirely).  Still lean (block 104): NO mesh
+        // decode — the per-frame streaming owns geometry.
+        const INDEX_OPTS: prototype_p3d::world::ScanOptions =
             prototype_p3d::world::ScanOptions {
                 retain_objects: true,
                 // block 22: the pairing needs every shape name and the
                 // retained node transforms
                 retain_shape_names: true,
                 retain_node_transforms: true,
-            },
-        );
+            };
+        let (world, _mesh, index_note) = index_world_cached(&set, INDEX_OPTS);
         boot_log::bootlog(&format!(
-            "world scan: {} archive(s), {} member(s), {} shape(s), {} mesh(es){}",
-            scan.archives_opened,
-            scan.members_scanned,
-            scan.shapes_decoded,
-            scan.meshes.len(),
-            if scan.capped { " (capped)" } else { "" }
+            "world index: {} archive(s), {} member(s), {} indexed, {} error(s) — {index_note}",
+            world.archives_opened,
+            world.members_scanned,
+            world.index.entries.len(),
+            world.errors,
         ));
-        for e in &scan.first_errors {
+        for e in &world.first_errors {
             log::warn!("mesh scan: {e}");
         }
 
@@ -878,7 +1005,7 @@ fn cpu_boot_work(set: GameFileSet, tx: mpsc::Sender<Result<CpuBootArtifacts, Str
             set,
             report,
             world_plan,
-            scan,
+            scan: _mesh,
             world,
             pair_rep,
             pm_rep,

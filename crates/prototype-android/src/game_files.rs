@@ -34,6 +34,46 @@ pub const CANONICAL_PC_ARCHIVES: [&str; 5] = [
     "02art.rcf",
 ];
 
+/// Block 105: `true` when an archive can hold WORLD data (cells,
+/// placements, drawables, geometry) and therefore belongs in the boot
+/// index; `false` for the pure sound banks.  The block-104 device log
+/// measured the cost of not asking this question: 85% of the indexed
+/// members came from `00audio.rcf` + `01audio.rcf` + the four `.woi`
+/// wave-bank archives — none of which can ever hold a placement.
+///
+/// Rule (conservative, stem-based): an archive is SKIPPED only when its
+/// file stem contains `audio` or `woi` (case-insensitive).  Everything
+/// else — cells, art, unknown archives, mods — is indexed, because the
+/// user's folder is NOT the canonical five and being clever here loses
+/// real world data (the honest cost of one unskipped archive is minutes
+/// in the cached build; the cost of a skipped cells archive is an
+/// empty world).
+pub fn index_worthy_archive(stem: &str) -> bool {
+    let s = stem.to_ascii_lowercase();
+    !(s.contains("audio") || s.contains("woi"))
+}
+
+#[cfg(test)]
+mod index_skip_tests {
+    use super::*;
+
+    /// Block 105: the sound banks leave the index; everything else —
+    /// including unknown archives and mods — stays in.
+    #[test]
+    fn sound_banks_leave_the_index() {
+        assert!(index_worthy_archive("00cells"));
+        assert!(index_worthy_archive("art"));
+        assert!(index_worthy_archive("frontend"));
+        assert!(index_worthy_archive("cellsarchive"));
+        assert!(index_worthy_archive("Text_english"));
+        assert!(!index_worthy_archive("00audio"));
+        assert!(!index_worthy_archive("01AUDIO"));
+        assert!(!index_worthy_archive("00woi"));
+        assert!(!index_worthy_archive("03Woi"));
+        assert!(!index_worthy_archive("my_music_audio_pack"));
+    }
+}
+
 /// Everything discovered in one asset-folder scan.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct GameFileSet {

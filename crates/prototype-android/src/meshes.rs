@@ -909,6 +909,169 @@ fn geo_shape_name(p3d: &[u8], chunk: &geo::ChildChunk) -> Option<String> {
     )
 }
 
+/// One archive's lean-index result — merged into the final
+/// [`WorldScanReport`] by global archive position so the output is
+/// IDENTICAL to a sequential scan no matter which thread ran what.
+struct ArchiveIndex {
+    entries: Vec<prototype_p3d::world::WorldIndexEntry>,
+    members_scanned: u32,
+    errors: u32,
+    first_errors: Vec<String>,
+    archives_opened: u32,
+    archives_failed: u32,
+}
+
+/// Index one archive (lean: decompress member-by-member, keep only
+/// the index, drop every byte).  The body mirrors
+/// [`collect_meshes_near`]'s pass 1 for a single archive.
+fn lean_index_one_archive(
+    gi: usize,
+    path: &std::path::Path,
+    opts: prototype_p3d::world::ScanOptions,
+) -> ArchiveIndex {
+    let mut rep = ArchiveIndex {
+        entries: Vec::new(),
+        members_scanned: 0,
+        errors: 0,
+        first_errors: Vec::new(),
+        archives_opened: 0,
+        archives_failed: 0,
+    };
+    let started = std::time::Instant::now();
+    let data = match std::fs::read(path) {
+        Ok(d) => d,
+        Err(e) => {
+            rep.archives_failed += 1;
+            rep.first_errors.push(format!("{}: read failed: {e}", path.display()));
+            return rep;
+        }
+    };
+    let archive = match prototype_rcf::RcfArchive::parse(&data) {
+        Ok(a) => a,
+        Err(e) => {
+            rep.archives_failed += 1;
+            rep.first_errors.push(format!("{}: parse failed: {e}", path.display()));
+            return rep;
+        }
+    };
+    rep.archives_opened += 1;
+    let member_count = archive.entries.len();
+    for entry in archive.entries.iter() {
+        rep.members_scanned += 1;
+        match archive.payload_decompressed(entry) {
+            Ok(p3d) => {
+                rep.entries
+                    .push(prototype_p3d::world::scan_world_member_opts(
+                        entry.name_hash,
+                        &p3d,
+                        opts,
+                    ));
+            }
+            Err(e) => {
+                rep.errors += 1;
+                if rep.first_errors.len() < 4 {
+                    rep.first_errors.push(format!(
+                        "entry hash {:#x}: decompress failed: {e}",
+                        entry.name_hash
+                    ));
+                }
+            }
+        }
+        // Periodic journaling — the giant cells archive runs minutes
+        // between archive-done lines; the boot log must visibly MOVE
+        // (it is the only thing the user can share from a device).
+        if rep.members_scanned % 250 == 0 {
+            let line = format!(
+                "index: archive {gi} ({}) at {} member(s), {:.1}s",
+                path.display(),
+                rep.members_scanned,
+                started.elapsed().as_secs_f32()
+            );
+            log::info!("{line}");
+            crate::boot_log::bootlog(&line);
+        }
+    }
+    let line = format!(
+        "index: archive {gi} ({}) done — {member_count} member(s), {:.1}s elapsed",
+        path.display(),
+        started.elapsed().as_secs_f32()
+    );
+    log::info!("{line}");
+    crate::boot_log::bootlog(&line);
+    rep
+}
+
+/// Block 105: the PARALLEL lean index — the phone boot's index pass.
+/// Same contract as `collect_meshes_near(.., max_meshes = 0, ..)`'s
+/// pass 1 (index every member, decode NO meshes, retain no bytes) but
+/// split across `std::thread::scope` workers and merged in ARCHIVE
+/// ORDER, so the result is identical to a sequential scan (spawn and
+/// pairing order stable) no matter the thread scheduling.
+///
+/// Balance: greedy largest-file-first (LPT) over archive byte sizes —
+/// the giant cells archive lands on its own worker while dozens of
+/// small audio/text archives pack together.  `workers` clamps to the
+/// archive count; 1 worker = sequential semantics.
+pub fn lean_index_archives(
+    archive_paths: &[std::path::PathBuf],
+    opts: prototype_p3d::world::ScanOptions,
+    workers: usize,
+) -> WorldScanReport {
+    let n = workers.clamp(1, 64).min(archive_paths.len().max(1));
+    let size = |i: usize| archive_paths[i].metadata().map(|m| m.len()).unwrap_or(0);
+    // LPT: biggest file first, each to the currently-lightest slot.
+    let mut order: Vec<usize> = (0..archive_paths.len()).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(size(i)));
+    let mut loads = vec![0u64; n];
+    let mut per_slot: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for &gi in &order {
+        let slot = (0..n).min_by_key(|&s| loads[s]).unwrap();
+        per_slot[slot].push(gi);
+        loads[slot] += size(gi);
+    }
+    for gis in per_slot.iter_mut() {
+        gis.sort_unstable(); // ascending archive order inside each slot
+    }
+    // One thread per slot; each returns (global index, report) pairs.
+    let mut per_archive: Vec<(usize, ArchiveIndex)> = std::thread::scope(|s| {
+        let handles: Vec<_> = per_slot
+            .into_iter()
+            .map(|gis| {
+                s.spawn(move || {
+                    gis.into_iter()
+                        .map(|gi| {
+                            let rep =
+                                lean_index_one_archive(gi, &archive_paths[gi], opts);
+                            (gi, rep)
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().expect("lean index worker panicked"))
+            .collect()
+    });
+    // Restore global archive order, THEN merge — deterministic output
+    // identical to the sequential scan.
+    per_archive.sort_by_key(|(gi, _)| *gi);
+    let mut world = WorldScanReport::default();
+    for (_, rep) in per_archive {
+        world.members_scanned += rep.members_scanned;
+        world.errors += rep.errors;
+        world.archives_opened += rep.archives_opened;
+        world.archives_failed += rep.archives_failed;
+        for e in rep.first_errors {
+            if world.first_errors.len() < 4 {
+                world.first_errors.push(e);
+            }
+        }
+        world.index.entries.extend(rep.entries);
+    }
+    world
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -947,6 +1110,42 @@ mod tests {
         // The lean index still feeds the spawn + pairing machinery.
         let pairs = world.index.pair_drawables(usize::MAX);
         assert_eq!(pairs.pairs.len(), 4, "pairing works off the lean index");
+    }
+
+    /// Block 105: the parallel lean index is IDENTICAL to the
+    /// sequential lean pass — same members, same entry fields, same
+    /// archive-order — with 4 workers over 2 real archives.
+    #[test]
+    fn parallel_lean_index_matches_sequential() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("prototype-bin")
+            .join("tests")
+            .join("fixtures");
+        let paths = vec![dir.join("cells_pairing.rcf"), dir.join("scripts.rcf")];
+        let opts = prototype_p3d::world::ScanOptions {
+            retain_objects: true,
+            retain_shape_names: true,
+            retain_node_transforms: true,
+        };
+        let par = lean_index_archives(&paths, opts, 4);
+        let (_seq_mesh, seq) = collect_meshes_near(&paths, [0.0; 3], 0, opts);
+        assert_eq!(par.members_scanned, seq.members_scanned);
+        assert_eq!(par.archives_opened, seq.archives_opened);
+        assert_eq!(par.index.entries.len(), seq.index.entries.len());
+        for (a, b) in par.index.entries.iter().zip(seq.index.entries.iter()) {
+            assert_eq!(a.hash, b.hash);
+            assert_eq!(a.kind, b.kind);
+            assert_eq!(a.objects, b.objects);
+            assert_eq!(a.shapes, b.shapes);
+            assert_eq!(a.bbox, b.bbox);
+            assert_eq!(a.retained_objects.len(), b.retained_objects.len());
+        }
+        // The lean index still pairs (block 104 contract intact).
+        let par_pairs = par.index.pair_drawables(usize::MAX);
+        let seq_pairs = seq.index.pair_drawables(usize::MAX);
+        assert_eq!(par_pairs.pairs.len(), seq_pairs.pairs.len());
+        assert_eq!(par_pairs.pairs.len(), 4);
     }
 
     /// Block 22: the paired-drawable load path on the REAL Cell_82

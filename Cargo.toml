@@ -65,6 +65,8 @@ bytemuck    = "1"
 byteorder   = "1"
 memmap2    = "0.9"
 thiserror  = "1"
+serde      = { version = "1", features = ["derive"] }
+bincode    = "1.3"
 crc32fast  = "1"
 wgpu       = "25"
 # The WGSL front-end + validator wgpu itself compiles shaders with — used

@@ -112,7 +112,7 @@ pub const GAME_OBJECT_MARKER: u32 = 0x07F0_0001;
 pub const CHUNK_TYPE_COLLISION: u32 = 0x0702_0000;
 
 /// A world placement: position + unit-ish quaternion (x, y, z, w).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Placement {
     /// World position.
     pub pos: [f32; 3],
@@ -134,7 +134,7 @@ impl Placement {
 }
 
 /// Which META layout a GameObject used.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum ObjectVariant {
     /// "META" + u32 count + named attribute properties.
     PropTable,
@@ -165,7 +165,7 @@ pub enum ObjectVariant {
 /// n = 27).  The `n` strings are the decal resource names
 /// (`Cell_NN_light_decal_K`) the engine attaches to that host:
 /// streetlight hosts carry 2 (one per head), road-curve hosts 1.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LightDecalInfo {
     /// Host prop name (empty for the per-cell template records).
     pub host_prop: String,
@@ -189,7 +189,7 @@ pub struct LightDecalInfo {
 /// (hx [1.38,185.1], hy [0.50,26.0], hz [1.03,175.1]).  The tail's
 /// observed value domain is a,b ∈ {0,1}, c ∈ {0,2,6} — semantics
 /// UNKNOWN (fail-closed structure, honest fields).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AmbientExclusionVolume {
     /// World position (x, y, z) — the volume's center.
     pub pos: [f32; 3],
@@ -208,7 +208,7 @@ pub struct AmbientExclusionVolume {
 /// ```text
 /// [pos x,y,z 3×f32][quat x,y,z,w 4×f32][u32 id]         = 32 B
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WebNodeLocator {
     /// World position (x, y, z).
     pub pos: [f32; 3],
@@ -221,7 +221,7 @@ pub struct WebNodeLocator {
 
 /// Typed payload carried by the GameObject families whose layouts are
 /// proven beyond the plain spawner/prop-table grammars (block 41).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ObjectPayload {
     /// `proto::LightDecalInfo`.
     LightDecal(LightDecalInfo),
@@ -232,7 +232,7 @@ pub enum ObjectPayload {
 }
 
 /// One decoded placed world object (`0x07F00000`).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CellObject {
     /// First pascal, e.g. `proto::CloudSpawner(1):Cell_65Collectible004_38`.
     pub full_name: String,
@@ -271,7 +271,7 @@ pub struct CellObject {
 /// baked into the member's merged roots (or placed by the engine's
 /// building-template system) — the exact mapping stays UNKNOWN, and the
 /// draw path does not depend on it (see `PairedDrawable::placement`).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NodeTransform {
     /// World position.
     pub pos: [f32; 3],
@@ -323,7 +323,7 @@ pub struct PlacedObject {
 }
 
 /// Member classification derived from the chunk census.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum MemberKind {
     /// Bare 12-byte `P3D\xff` header (no chunks).
     #[default]
@@ -338,7 +338,7 @@ pub enum MemberKind {
 
 /// What one member scan found.  Honest counters: a GameObject that
 /// fails to decode is counted, not hidden.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct WorldIndexEntry {
     /// RCF directory hash of the member.
     pub hash: u32,
@@ -1168,7 +1168,7 @@ impl CellLayout {
 }
 
 /// The streamed-world index over one archive's members.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct WorldIndex {
     /// One entry per scanned member.
     pub entries: Vec<WorldIndexEntry>,

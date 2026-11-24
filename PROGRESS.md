@@ -4,6 +4,53 @@ ANR fix HELD — no more 10 s death — but the boot's full index+mesh
 pass never returned on the phone, and the storage grant flow never
 fired because of a hardcoded literal.  Both fixed here).
 
+(Block 105 — THE USER WENT TO SLEEP FOR 8 HOURS WITH A MANDATE:
+"the game must actually boot and render" + real menus + landscape +
+fullscreen + movement + Windows target + VERIFY AGAINST THE REAL
+FILES.  The second boot-log (run 2) showed the lean boot ALIVE and
+journalling (block 104's design held) but the INDEX ITSELF is the
+bottleneck: 85% of the pass's 17,750 members came from pure sound
+banks (00audio.rcf: 13,486 members in 1.6 s, 01audio.rcf: 1,128,
+four .woi wave banks), art.rcf took 244 s, and the run ended 6.2
+minutes in, mid-archive-7, on giant members at ~0.5 s EACH — an
+hour-plus total, which reads as "hangs indefinitely".  This block
+makes the boot FINISH:)
+
+(1) FILTER — game_files::index_worthy_archive(): archives whose stem
+contains `audio` or `woi` are sound banks and leave the index pass
+(they stay on disk for the audio paths, which read them by hash on
+demand).  Conservative on purpose: every other archive — cells, art,
+unknown, mods — indexes, because the user's folder is NOT the
+canonical five and a wrongly-skipped cells archive is an empty
+world.
+
+(2) PARALLEL — meshes::lean_index_archives(): the lean pass split
+across `std::thread::scope` workers with greedy largest-file-first
+(LPT) balance over archive sizes, merged in ARCHIVE ORDER — output
+identical to a sequential scan (proven by a test zipping the two on
+the real cells_pairing.rcf + the NEW REAL scripts.rcf fixture).
+Progress journals every 250 members per archive (the giant cells
+archive must not be silent for minutes).
+
+(3) CACHED — prototype-p3d::index_cache: the built WorldIndex is
+plain data (serde derives added to the world types; serde + bincode
+added to prototype-p3d) and is written once to `world-index.cache`
+NEXT TO THE ARCHIVES (atomic tmp+rename), bound to a corpus
+fingerprint (FNV-1a over every archive's name + byte length + the
+scan options + a format version).  Boot 2+ reads it in milliseconds;
+ANY mismatch (corpus edit, options change, corrupt file) is a fail-
+open miss and an honest rebuild.  Tests: roundtrip preserves every
+field incl. retained objects; fingerprint changes invalidate.
+
+Real files staged into fixtures: scripts.rcf (the real 186 KB
+script-archive), cementfiles.p3d.  The engine DLL, frontendshaders
+p3d and boot_strap p3d were already there from earlier sessions.
+
+Verified: workspace 872/0; aarch64 android-activity gate clean (0
+warnings).  Expected on the device NEXT RUN: skip lines for the
+audio/woi archives, ~N-worker timings, "cache written" after the
+first build, and a CACHE HIT on boot 2.
+
 (Block 104 — THE USER'S SECOND RUN: TWO REAL BUGS, BOTH FROM THE
 BLOCK-103 LOG THE USER UPLOADED (boot-log.txt — the journal paid for
 itself on its first outing).  The ANR fix HELD: no 10-second death;
