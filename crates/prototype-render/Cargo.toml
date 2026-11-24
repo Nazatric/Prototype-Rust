@@ -16,6 +16,9 @@ path = "src/lib.rs"
 prototype-common = { workspace = true }
 prototype-p3d    = { workspace = true }
 prototype-math   = { workspace = true }
+# Block 103: the uncaptured-wgpu-error handler logs instead of panicking
+# (wgpu's default handler would kill the app on a phone).
+log              = "0.4"
 
 # Real wgpu render loop — feature-gated so default builds (and every
 # sandboxed `cargo test`) never compile it; `cargo check --features

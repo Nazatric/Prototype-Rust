@@ -488,6 +488,14 @@ impl Renderer {
                 trace: wgpu::Trace::Off,
             })
             .await?;
+        // Block 103: wgpu's DEFAULT uncaptured-error handler PANICS — on
+        // a phone, one validation error from a driver quirk or an
+        // oversized real-game mesh would kill the whole app mid-boot.
+        // Log it instead: the frame degrades, the journal records the
+        // cause, the process stays alive.
+        device.on_uncaptured_error(Box::new(|e| {
+            log::error!("wgpu uncaptured error (frame degraded, app alive): {e}");
+        }));
 
         let caps = surface.get_capabilities(&adapter);
         let format = caps

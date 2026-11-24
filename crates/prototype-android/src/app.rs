@@ -57,6 +57,7 @@
 //! native-glue FFI.
 
 use std::path::PathBuf;
+use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -96,6 +97,9 @@ use crate::touch::{TouchMapper, TouchMapped, TouchPhase, TouchPoint};
 // the Setup status colours (see the module's docs for the black-screen
 // story that motivated it).
 use crate::platform_ui::{status_clear_color, PlatformUi, StatusScreen, StorageState};
+// Block 103: the boot journal + crash reporter (boot-log.txt in the
+// asset folder — the ONE artifact a user without adb can share).
+use crate::boot_log;
 // Block 57: the GAMEPLAY audio DEVICE edge — the persistent-lifetime
 // counterpart of the movie edge, opened over the AudioOut ring.
 #[cfg(feature = "audio-cpal")]
@@ -463,8 +467,6 @@ pub struct App {
     folder: PathBuf,
     /// File-discovery phase (re-scanned on every resume).
     state: AppState,
-    /// The device-free boot report (shader pairs ready for pipelines).
-    boot: Option<BootReport>,
     /// Attributes for the window created on first resume (title/size —
     /// the desktop demo customises them; Android keeps defaults).
     window_attrs: WindowAttributes,
@@ -543,6 +545,11 @@ pub struct App {
     /// Block 102: the last Setup toast text (dedupe — `resumed` fires on
     /// every return from Settings; the same message must not re-toast).
     last_setup_toast: Option<String>,
+    /// Block 103: the boot phase machine (worker thread + chunked GPU
+    /// stages).  The old synchronous `try_boot` inside `resumed` wedged
+    /// the event loop past Android's ~10 s ANR limit and the OS killed
+    /// the app mid-boot.
+    boot_phase: BootPhase,
     /// Surface aspect ratio (updated on resize + boot).
     aspect: f32,
     /// Logged-once flag: the pipeline lacks the WVP uniform (rows 0 —
@@ -698,6 +705,199 @@ pub struct App {
     gameplay_audio: Option<GameplayAudioEdge>,
 }
 
+// --- Block 103: the boot phase machine ----------------------------------
+//
+// The block-102 APK's boot ran synchronously inside `resumed`: on the
+// user's phone the archive decompress passes held the event-loop thread
+// past Android's ~10 s ANR limit and the OS killed the app mid-boot
+// (black screen -> death ~10 s in — the 2026-11-24 report).  The boot is
+// now split:
+//
+// * CPU stages (shader prep + the two archive decompress passes + the
+//   movie scan) run on a WORKER THREAD — they touch no GPU/window — and
+//   ship their results through an mpsc channel (panics are CAUGHT and
+//   become a `BootPhase::Failed`, never a silent hang or a dead
+//   process);
+// * GPU stages run on the main thread, ONE stage (or a small chunk) per
+//   loop iteration, so winit keeps pumping events between them;
+// * the status surface stays up as the backdrop: the booting tint while
+//   the machine runs, the failure red if it dies, and `boot-log.txt` in
+//   the asset folder records every stage (the user has no adb).
+
+/// GPU bring-up chunk size (block 103): each mesh upload can be tens
+/// of MB — the chunk keeps every loop iteration far below any watchdog
+/// threshold.  (The pipeline stage stays one tick: even ~50 WGSL
+/// translations measure well under a second on a phone.)
+const MESHES_PER_TICK: usize = 2;
+
+/// The CPU worker's finished boot artifacts — everything the GPU stages
+/// need, produced off the main thread (plain data, `Send`).
+struct CpuBootArtifacts {
+    /// The scanned file set (the member stream attaches over its
+    /// archives on the main thread later).
+    set: GameFileSet,
+    /// The device-free boot report (shader pairs + problems).
+    report: BootReport,
+    /// The world pair's plan (cloned from the report).
+    world_plan: Option<prototype_render::shader::world::WorldPairPlan>,
+    /// The world scan (meshes + world/local split + provenance).
+    scan: crate::meshes::MeshLoadReport,
+    /// The world scan report (the real index + retained records).
+    world: crate::meshes::WorldScanReport,
+    /// The block-22 drawable pairing report.
+    pair_rep: prototype_p3d::world::PairReport,
+    /// The paired meshes loaded from those pairs.
+    pm_rep: crate::meshes::PairedMeshReport,
+    /// The boot movie candidate (if the user's archives carry one).
+    movie: Option<crate::movie::BootMovie>,
+}
+
+/// The GPU bring-up stages (block 103) — one per loop iteration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GpuStage {
+    /// Surface + device + the shader-pair pipelines.
+    Pipelines,
+    /// The placed-object spawn (once) + the paired-drawable batches.
+    Paired,
+    /// The world mesh batches (chunked).
+    World,
+    /// Stream attach + fallbacks + movie + frontend (one tick).
+    Attach,
+}
+
+/// The boot phase machine (block 103 — see the module docs above).
+enum BootPhase {
+    /// Nothing in flight (cold start, or torn down with a suspend).
+    Idle,
+    /// The CPU worker is reading the archives (the booting tint shows).
+    Cpu {
+        /// The worker's result channel (one message, then it closes).
+        rx: mpsc::Receiver<Result<CpuBootArtifacts, String>>,
+    },
+    /// GPU bring-up, one stage per loop iteration.
+    Gpu {
+        /// The CPU artifacts being consumed.
+        art: CpuBootArtifacts,
+        /// The stage the next `pump_boot` tick runs.
+        stage: GpuStage,
+        /// Next paired-mesh index (the chunk cursor).
+        next_paired: usize,
+        /// Next world-mesh index (the chunk cursor).
+        next_world: usize,
+        /// The block-21 spawn ran (once, before the paired chunks).
+        spawned: bool,
+        /// Block 20's batch->member provenance, accumulated across the
+        /// world-stage ticks (aligned with `self.batches`).
+        member_of_batch: Vec<Option<usize>>,
+        /// Total world-space meshes built (the old boot's `built`).
+        world_built: usize,
+    },
+    /// Boot complete — the world draw path owns the screen.
+    Done,
+    /// Boot failed (red status + toast; retried on the next resume).
+    Failed(String),
+}
+
+/// The CPU boot worker body (block 103): device-free prep + the two
+/// archive decompress passes + the movie scan.  Panics are CAUGHT and
+/// reported through the channel — a worker death must surface as a
+/// `Failed` phase, not a dead process or a silent hang.
+fn cpu_boot_work(set: GameFileSet, tx: mpsc::Sender<Result<CpuBootArtifacts, String>>) {
+    boot_log::stage("cpu: shader prep (prepare_programs)");
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let report = prepare_programs(&set);
+        log::info!("{}", boot_summary(&report));
+        for p in &report.problems {
+            log::warn!("boot problem: {p}");
+        }
+        boot_log::bootlog(&format!(
+            "shader prep: {} pair(s), {} problem(s)",
+            report.pairs.len(),
+            report.problems.len()
+        ));
+        let world_plan = report.world.clone();
+
+        boot_log::stage("cpu: world archive scan (collect_meshes_near)");
+        let (scan, world) = crate::meshes::collect_meshes_near(
+            &set.rcf_archives,
+            [0.0, 0.0, 0.0],
+            16,
+            prototype_p3d::world::ScanOptions {
+                retain_objects: true,
+                // block 22: the pairing needs every shape name and the
+                // retained node transforms
+                retain_shape_names: true,
+                retain_node_transforms: true,
+            },
+        );
+        boot_log::bootlog(&format!(
+            "world scan: {} archive(s), {} member(s), {} shape(s), {} mesh(es){}",
+            scan.archives_opened,
+            scan.members_scanned,
+            scan.shapes_decoded,
+            scan.meshes.len(),
+            if scan.capped { " (capped)" } else { "" }
+        ));
+        for e in &scan.first_errors {
+            log::warn!("mesh scan: {e}");
+        }
+
+        boot_log::stage("cpu: pair drawables + paired meshes");
+        let pair_rep = world.index.pair_drawables(PAIR_CAP);
+        let pm_rep = crate::meshes::collect_paired_meshes(
+            &set.rcf_archives,
+            &pair_rep.pairs,
+            [0.0, 0.0, 0.0],
+            PAIRED_MESH_CAP,
+        );
+        boot_log::bootlog(&format!(
+            "paired: {} pair(s) of {} drawable record(s) ({} prop-table skipped), {} mesh(es) from {} member(s), {} shape(s) missing",
+            pair_rep.pairs.len(),
+            pair_rep.records_with_drawable,
+            pm_rep.skipped_prop_table,
+            pm_rep.meshes.len(),
+            pm_rep.members_decompressed,
+            pm_rep.shapes_missing
+        ));
+        for e in &pm_rep.first_errors {
+            log::warn!("paired drawables: {e}");
+        }
+
+        boot_log::stage("cpu: boot movie scan");
+        let movie = find_boot_movie(&set.rcf_archives);
+
+        CpuBootArtifacts {
+            set,
+            report,
+            world_plan,
+            scan,
+            world,
+            pair_rep,
+            pm_rep,
+            movie,
+        }
+    }));
+    match outcome {
+        Ok(art) => {
+            boot_log::bootlog("cpu worker: artifacts ready");
+            let _ = tx.send(Ok(art));
+        }
+        Err(payload) => {
+            let msg = boot_log::panic_message(&payload);
+            boot_log::bootlog(&format!("cpu worker PANIC: {msg}"));
+            let _ = tx.send(Err(format!("cpu boot panicked: {msg}")));
+        }
+    }
+}
+
+/// Toasts are two lines max — clip a boot-failure reason for one.
+fn truncate_toast(msg: &str) -> &str {
+    match msg.char_indices().nth(72) {
+        Some((i, _)) => &msg[..i],
+        None => msg,
+    }
+}
+
 impl App {
     /// Build the app and run the initial scan-or-setup (folder is
     /// created on first launch — the loader contract).  The desktop
@@ -714,7 +914,6 @@ impl App {
         Self {
             state,
             folder,
-            boot: None,
             window_attrs: Window::default_attributes(),
             window: None,
             renderer: None,
@@ -740,6 +939,7 @@ impl App {
             status_render: false,
             storage: StorageState::Granted,
             last_setup_toast: None,
+            boot_phase: BootPhase::Idle,
             aspect: 1.0,
             warned_no_wvp: false,
             logged_first_frame: false,
@@ -1905,102 +2105,182 @@ impl App {
         out
     }
 
-    /// Boot (or re-boot) the renderer against the current window, when
-    /// the file set allows it.  All device-touching; errors are logged,
-    /// never panicked.
-    fn try_boot(&mut self) {
-        let set = match &self.state {
-            AppState::Ready(set) => set.clone(),
-            AppState::Setup { last_error, .. } => {
-                log::info!(
-                    "setup: waiting for game files{}",
-                    last_error
-                        .as_deref()
-                        .map(|e| format!(" ({e})"))
-                        .unwrap_or_default()
-                );
-                return;
-            }
-        };
-        let Some(window) = self.window.clone() else {
-            return; // no surface yet; resumed will come back with one
-        };
-
-        // 0. Block 58: the gameplay clip registry (the audio CONTENT
-        //    half) — device-free, so it loads before the GPU edge.
-        //    Non-fatal: a folder without an audio P3D boots exactly
-        //    as before (the event mapping degrades to silence).
-        self.load_gameplay_sounds(&set);
-
-        // 0b. Block 66: the mission MUSIC GRAPH (device-free) — the
-        //     PROVEN cue → transition → stem → clip chain over the
-        //     user's own audio banks.  Non-fatal: a graph-less boot
-        //     is exactly the pre-66 silent one; the (future) mission
-        //     system calls [`App::play_mission_music`].
-        self.load_music_graph(&set);
-
-        // 1. Device-free boot (collect + pair + decode + translate +
-        //    cross-check).  Re-done every boot: cheap relative to device
-        //    bring-up and always reflects the CURRENT files on disk.
-        let report = prepare_programs(&set);
-        log::info!("{}", boot_summary(&report));
-        for p in &report.problems {
-            log::warn!("boot problem: {p}");
+    /// Spawn the CPU boot worker (block 103).  The heavy archive reads
+    /// leave the main thread entirely; the GPU stages start when the
+    /// artifacts arrive (see [`App::pump_boot`]).
+    fn spawn_boot(&mut self, set: GameFileSet) {
+        boot_log::stage("spawn cpu worker");
+        let (tx, rx) = mpsc::channel();
+        match std::thread::Builder::new()
+            .name("prototype-boot".into())
+            .spawn(move || cpu_boot_work(set, tx))
+        {
+            Ok(_join) => self.boot_phase = BootPhase::Cpu { rx },
+            Err(e) => self.boot_fail(format!("worker spawn failed: {e}")),
         }
-        // The world plan is consumed twice (the pipeline build below +
-        // the mesh paths) — clone it before the report moves into self.
-        let world_plan = report.world.clone();
-        self.boot = Some(report);
+    }
 
-        // 2. The GPU edge: surface + device on the window.
+    /// Record a boot failure (block 103): the failure red + a toast +
+    /// the journal line.  The next resume retries the boot (the user
+    /// may have fixed their files meanwhile).
+    fn boot_fail(&mut self, msg: String) {
+        log::error!("boot failed: {msg}");
+        boot_log::bootlog(&format!("BOOT FAILED: {msg}"));
+        self.boot_phase = BootPhase::Failed(msg.clone());
+        if let Some(ui) = self.platform.as_ref() {
+            ui.toast(&format!(
+                "Boot failed: {} — send boot-log.txt",
+                truncate_toast(&msg)
+            ));
+        }
+    }
+
+    /// Advance the boot phase machine ONE step (block 103; called from
+    /// `about_to_wait` every loop iteration).  Every GPU stage must be
+    /// SHORT — the loop must keep pumping events or Android ANR-kills
+    /// the app (the exact bug this machine replaces).
+    fn pump_boot(&mut self) {
+        // mem::replace keeps the borrow checker happy: the stage calls
+        // need `&mut self` (renderer, pipelines, paired) while the phase
+        // owns the artifacts — the block-55 E0499 lesson again.
+        match std::mem::replace(&mut self.boot_phase, BootPhase::Idle) {
+            BootPhase::Cpu { rx } => match rx.try_recv() {
+                Ok(Ok(art)) => {
+                    self.boot_phase = BootPhase::Gpu {
+                        art,
+                        stage: GpuStage::Pipelines,
+                        next_paired: 0,
+                        next_world: 0,
+                        spawned: false,
+                        member_of_batch: Vec::new(),
+                        world_built: 0,
+                    };
+                }
+                Ok(Err(msg)) => self.boot_fail(msg),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.boot_fail("cpu worker died without a report".into());
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    // Still reading the archives — keep the tint up.
+                    self.boot_phase = BootPhase::Cpu { rx };
+                }
+            },
+            BootPhase::Gpu {
+                mut art,
+                stage,
+                next_paired,
+                next_world,
+                spawned,
+                member_of_batch,
+                world_built,
+            } => match stage {
+                GpuStage::Pipelines => {
+                    if let Some(next) = self.gpu_stage_pipelines(&mut art) {
+                        self.boot_phase = BootPhase::Gpu {
+                            art,
+                            stage: next,
+                            next_paired,
+                            next_world,
+                            spawned,
+                            member_of_batch,
+                            world_built,
+                        };
+                    } // None -> Failed already set; artifacts drop
+                }
+                GpuStage::Paired => {
+                    if let Some((next, np, sp)) =
+                        self.gpu_stage_paired(&mut art, next_paired, spawned)
+                    {
+                        self.boot_phase = BootPhase::Gpu {
+                            art,
+                            stage: next,
+                            next_paired: np,
+                            next_world,
+                            spawned: sp,
+                            member_of_batch,
+                            world_built,
+                        };
+                    }
+                }
+                GpuStage::World => {
+                    if let Some((next, nw, mob, wb)) =
+                        self.gpu_stage_world(&mut art, next_world, member_of_batch, world_built)
+                    {
+                        self.boot_phase = BootPhase::Gpu {
+                            art,
+                            stage: next,
+                            next_paired,
+                            next_world: nw,
+                            spawned,
+                            member_of_batch: mob,
+                            world_built: wb,
+                        };
+                    }
+                }
+                GpuStage::Attach => {
+                    self.gpu_stage_attach(art, member_of_batch, world_built);
+                    // Done (or Failed) is set inside — nothing to
+                    // re-store: the artifacts are consumed.
+                }
+            },
+            other => self.boot_phase = other,
+        }
+    }
+
+    /// GPU stage 1 (block 103): surface + device + the shader-pair
+    /// pipelines + the world pipeline.  One tick for the whole stage —
+    /// the WGSL translations are the shortest GPU pole; the archive
+    /// reads were the long one and already finished off-thread.
+    fn gpu_stage_pipelines(&mut self, art: &mut CpuBootArtifacts) -> Option<GpuStage> {
+        boot_log::stage("gpu: surface + device");
+        // The status renderer must go first — one live surface per
+        // window keeps the Android compositor honest.
+        self.renderer = None;
+        let Some(window) = self.window.clone() else {
+            self.boot_fail("window gone during boot".into());
+            return None;
+        };
         let size = window.inner_size();
         let (w, h) = (size.width.max(1), size.height.max(1));
-        let mut renderer = match pollster::block_on(Renderer::new(window.clone(), w, h)) {
+        let renderer = match pollster::block_on(Renderer::new(window.clone(), w, h)) {
             Ok(r) => r,
             Err(e) => {
-                log::error!("renderer creation failed: {e} — staying in setup-like state");
-                return;
+                self.boot_fail(format!("renderer creation failed: {e}"));
+                return None;
             }
         };
         let format = renderer.surface_format();
 
-        // 3. One real pipeline per shader pair.  A driver rejecting one
-        //    WGSL translation must not kill the app — the failure is the
-        //    signal we need (logcat / stderr) and the rest still renders.
+        boot_log::stage("gpu: shader pipelines");
         let mut built = 0usize;
         let mut failed = Vec::new();
-        if let Some(report) = &self.boot {
-            for pair in &report.pairs {
-                match create_render_pipeline(
-                    renderer.device(),
-                    &pair.name,
-                    &pair.vs,
-                    &pair.fs,
-                    &pair.vs_wgsl,
-                    &pair.fs_wgsl,
-                    format,
-                ) {
-                    Ok(p) => {
-                        built += 1;
-                        self.pipelines.push(p);
-                    }
-                    Err(e) => failed.push(format!("{}: {e}", pair.name)),
+        for pair in &art.report.pairs {
+            match create_render_pipeline(
+                renderer.device(),
+                &pair.name,
+                &pair.vs,
+                &pair.fs,
+                &pair.vs_wgsl,
+                &pair.fs_wgsl,
+                format,
+            ) {
+                Ok(p) => {
+                    built += 1;
+                    self.pipelines.push(p);
                 }
+                Err(e) => failed.push(format!("{}: {e}", pair.name)),
             }
         }
         for f in &failed {
             log::warn!("pipeline failed: {f}");
         }
         log::info!("pipelines: {built} built, {} failed", failed.len());
+        boot_log::bootlog(&format!("pipelines: {built} built, {} failed", failed.len()));
 
-        // 3b. Block 34 (NEXT-UP 7(e)): the REAL WORLD pipeline — the
-        //     DLL `default` pair from the user's engine DLL (block 33:
-        //     the default class's lit pass IS the world path; the
-        //     frontend pairs keep their own passes).  Plans come from
-        //     the WGSL emitter's capture (the bytecode mirror cannot
-        //     see the blobs' u_c/b# rows).  Failure is non-fatal: the
-        //     frontend fallback stays, with the reason logged.
-        if let Some(plan) = world_plan.as_ref() {
+        // Block 34: the REAL world pipeline — the DLL `default` pair
+        // from the user's engine DLL.  Failure is non-fatal: the
+        // frontend fallback stays, with the reason logged.
+        if let Some(plan) = art.world_plan.as_ref() {
             match create_render_pipeline_with_plans(
                 renderer.device(),
                 "default (world)",
@@ -2029,52 +2309,44 @@ impl App {
             self.world_pipeline = None;
         }
 
-        // 4. REAL geometry first (M21b, block 16): scan the user's own
-        //    archives for Shape chunks and draw those meshes through the
-        //    first built pipeline.  Block 34: the mesh→shader binding's
-        //    WORLD half is now REAL — world geometry draws through the
-        //    DLL `default` pair (the engine's lit pass) when the user's
-        //    engine DLL was found; the frontend pipeline[0] stays the
-        //    honest fallback.  Block 21: only WORLD-space meshes become
-        //    batches (PROVEN split, `WORLD_LOCAL_SPLIT_M`); local
-        //    drawable shapes need the GameObject placement pairing and
-        //    would otherwise draw at the map origin.
-        let mut drew_real_meshes = false;
-        // `world_plan` was cloned at boot-report time (CTAB names drive
-        // the world material slots and the pipeline build above).
-        // Block 44: the App KEEPS the plan — the per-frame streaming
-        // loads build batches with the same daylight rows.
-        self.world_plan = world_plan.clone();
-        if let Some(p0) = self.pipelines.first() {
-            // Block 34: which pipeline world geometry draws through.
-            let (mesh_pipeline, world_ref): (&GpuPipeline, Option<&_>) =
-                match (self.world_pipeline.as_ref(), world_plan.as_ref()) {
-                    (Some(wp), Some(plan)) => (wp, Some(plan)),
-                    _ => (p0, None),
-                };
-            // M25 (block 18): the world index orders the load — members
-            // whose placement bbox is nearest the boot camera ([0,0,0],
-            // roughly mid-map for Prototype's Manhattan) decode first.
-            // Block 20: the same single decompress pass also RETAINS the
-            // full decoded GameObject records, so the boot log can
-            // report the real spawner census and the per-frame draw
-            // selection gets its batch→member provenance.
-            let (scan, world) = crate::meshes::collect_meshes_near(
-                &set.rcf_archives,
-                [0.0, 0.0, 0.0],
-                16,
-                prototype_p3d::world::ScanOptions {
-                    retain_objects: true,
-                    // block 22: the pairing needs every shape name and
-                    // the retained node transforms
-                    retain_shape_names: true,
-                    retain_node_transforms: true,
-                },
-            );
-            let (w_objs, w_shapes) = world.index.totals();
-            let (w_retained, w_spawnable) = world.index.retained_totals();
-            // Block 21: spawn the REAL placed-object database (engine).
-            let spawn_report = self.world_objects.spawn_from_index(&world.index, SPAWN_CAP);
+        self.aspect = {
+            let size = window.inner_size();
+            if size.height > 0 {
+                size.width as f32 / size.height as f32
+            } else {
+                1.0
+            }
+        };
+        self.renderer = Some(renderer);
+        Some(GpuStage::Paired)
+    }
+
+    /// Which pipeline world geometry draws through (the block-34 rule)
+    /// — the DLL `default` pair when it built, else pipeline[0].
+    fn mesh_pipeline_ref(&self) -> &GpuPipeline {
+        if self.world_pipeline.is_some() {
+            self.world_pipeline.as_ref().unwrap()
+        } else {
+            &self.pipelines[0]
+        }
+    }
+
+    /// GPU stage 2 (block 103): the placed-object spawn (once) + the
+    /// paired-drawable batches, [`MESHES_PER_TICK`] per iteration.
+    fn gpu_stage_paired(
+        &mut self,
+        art: &mut CpuBootArtifacts,
+        next: usize,
+        spawned: bool,
+    ) -> Option<(GpuStage, usize, bool)> {
+        let mut spawned = spawned;
+        if !spawned {
+            boot_log::stage("gpu: world spawn");
+            let (_w_objs, _w_shapes) = art.world.index.totals();
+            let (_w_retained, w_spawnable) = art.world.index.retained_totals();
+            let spawn_report = self
+                .world_objects
+                .spawn_from_index(&art.world.index, SPAWN_CAP);
             self.spawn_report = Some(spawn_report);
             let classes = self.world_objects.class_counts();
             let class_line: Vec<String> = classes
@@ -2082,255 +2354,263 @@ impl App {
                 .take(6)
                 .map(|(c, n)| format!("{c}×{n}"))
                 .collect();
+            let spawned_n = self.spawn_report.as_ref().map(|r| r.spawned).unwrap_or(0);
             log::info!(
                 "world spawn: {} entities ({} duplicates{}, cap {}) of {} world-space spawner(s); classes: {}",
-                spawn_report.spawned,
-                spawn_report.duplicates,
-                if spawn_report.capped { ", CAPPED" } else { "" },
+                spawned_n,
+                self.spawn_report.as_ref().map(|r| r.duplicates).unwrap_or(0),
+                if self.spawn_report.as_ref().map(|r| r.capped).unwrap_or(false) { ", CAPPED" } else { "" },
                 SPAWN_CAP,
                 w_spawnable,
                 class_line.join(", ")
             );
-            let mut spawner_classes: std::collections::BTreeMap<String, usize> =
-                Default::default();
-            for p in world.index.spawn_placements() {
-                *spawner_classes.entry(p.object.class).or_default() += 1;
+            boot_log::bootlog(&format!("world spawn: {spawned_n} entities"));
+            spawned = true;
+        }
+        // No pipelines at all -> nothing draws through; skip straight
+        // to the world stage (its fallback path covers this).
+        if self.pipelines.is_empty() {
+            return Some((GpuStage::World, 0, spawned));
+        }
+        let mut i = next;
+        let mut processed = 0usize;
+        while i < art.pm_rep.meshes.len() && processed < MESHES_PER_TICK {
+            // Borrow-split (all disjoint fields): the renderer mutably,
+            // the pipeline immutably, the plan from `art`, `self.paired`
+            // mutably.
+            let plan = art.world_plan.as_ref();
+            // Direct FIELD access only: an &self helper call would
+            // collide with the renderer's &mut borrow below.
+            let pipeline: &GpuPipeline = if self.world_pipeline.is_some() {
+                self.world_pipeline.as_ref().unwrap()
+            } else {
+                &self.pipelines[0]
+            };
+            let Some(r) = self.renderer.as_mut() else {
+                self.boot_fail("renderer gone during paired stage".into());
+                return None;
+            };
+            let batch = build_mesh_batches(r, pipeline, plan, &art.pm_rep.meshes[i].mesh);
+            if batch.is_empty() {
+                break; // the old semantics: stop the paired pass early
             }
-            let kinds = world.index.entries.iter().fold([0u32; 4], |mut k, e| {
-                k[match e.kind {
-                    prototype_p3d::world::MemberKind::Empty => 0,
-                    prototype_p3d::world::MemberKind::Objects => 1,
-                    prototype_p3d::world::MemberKind::Geometry => 2,
-                    prototype_p3d::world::MemberKind::Other => 3,
-                }] += 1;
-                k
-            });
-            log::info!(
-                "mesh scan (world-ordered): {} archive(s) opened, {} member(s), {} shape(s), {} mesh(es){}",
-                scan.archives_opened,
-                scan.members_scanned,
-                scan.shapes_decoded,
-                scan.meshes.len(),
-                if scan.capped { " (capped)" } else { "" }
-            );
-            log::info!(
-                "world index: {} cell(s), {} placed object(s), {} shape(s); members: {} empty, {} object, {} geometry, {} other",
-                world.index.cells().len(),
-                w_objs,
-                w_shapes,
-                kinds[0],
-                kinds[1],
-                kinds[2],
-                kinds[3]
-            );
-            log::info!(
-                "world spawn set: {} retained object record(s), {} world-space spawner(s): {:?}",
-                w_retained,
-                w_spawnable,
-                spawner_classes
-            );
-            // Block 22: pair the retained drawables with their same-cell
-            // shapes and load the LOCAL meshes of the placeable (binary)
-            // pairs — the per-building props appear at their REAL world
-            // positions.  Prop-table pairs are skipped (their node-
-            // transform composition is UNKNOWN — fail-closed).
-            let pair_rep = world.index.pair_drawables(PAIR_CAP);
-            let pm_rep = crate::meshes::collect_paired_meshes(
-                &set.rcf_archives,
-                &pair_rep.pairs,
-                [0.0, 0.0, 0.0],
-                PAIRED_MESH_CAP,
-            );
-            log::info!(
-                "paired drawables: {} pair(s) of {} drawable record(s) ({} prop-table skipped), {} mesh(es) from {} member(s), {} shape(s) missing",
-                pair_rep.pairs.len(),
-                pair_rep.records_with_drawable,
-                pm_rep.skipped_prop_table,
-                pm_rep.meshes.len(),
-                pm_rep.members_decompressed,
-                pm_rep.shapes_missing
-            );
-            for e in &pm_rep.first_errors {
-                log::warn!("paired drawables: {e}");
+            let pm = &art.pm_rep.meshes[i];
+            let pl = &pm.pair.placement;
+            let member_hash = art
+                .world
+                .index
+                .entries
+                .get(pm.pair.geometry_member)
+                .map(|e| e.hash)
+                .unwrap_or(0);
+            for b in batch {
+                self.paired.push(PairedBatch {
+                    batch: b,
+                    pos: Vec3::new(pl.pos[0], pl.pos[1], pl.pos[2]),
+                    quat_xyzw: pl.quat_xyzw,
+                    scale: pm.pair.scale.unwrap_or([1.0, 1.0, 1.0])[0],
+                    member_hash,
+                });
             }
-            if let Some(p0) = self.pipelines.first() {
-                let _ = p0; // the mesh path uses `mesh_pipeline` (block 34)
-                for pm in &pm_rep.meshes {
-                    // Block 44: the shared per-mesh batch builder (the
-                    // create + static-daylight block, see its doc).
-                    let batch =
-                        build_mesh_batches(&mut renderer, mesh_pipeline, world_ref, &pm.mesh);
-                    if batch.is_empty() {
-                        break;
-                    }
-                    let pl = &pm.pair.placement;
-                    // Block 45: the paired batch's streaming provenance
-                    // — the geometry member the shape came from.
-                    let member_hash = world
-                        .index
-                        .entries
-                        .get(pm.pair.geometry_member)
+            i += 1;
+            processed += 1;
+        }
+        if i >= art.pm_rep.meshes.len() {
+            if !self.paired.is_empty() {
+                log::info!(
+                    "paired batches: {} local drawable(s) placed by REAL record(s) on pipeline '{}'",
+                    self.paired.len(),
+                    self.mesh_pipeline_ref().name
+                );
+            }
+            boot_log::bootlog(&format!("paired batches: {}", self.paired.len()));
+            Some((GpuStage::World, 0, spawned))
+        } else {
+            Some((GpuStage::Paired, i, spawned))
+        }
+    }
+
+    /// GPU stage 3 (block 103): the world mesh batches, chunked; the
+    /// provenance accumulates across ticks (block 20's contract: it
+    /// stays aligned with `self.batches`).
+    fn gpu_stage_world(
+        &mut self,
+        art: &mut CpuBootArtifacts,
+        next: usize,
+        member_of_batch: Vec<Option<usize>>,
+        world_built: usize,
+    ) -> Option<(GpuStage, usize, Vec<Option<usize>>, usize)> {
+        let mut member_of_batch = member_of_batch;
+        let mut world_built = world_built;
+        // No pipelines -> the honest old fallback path (zero batches;
+        // the attach stage's debug fallback covers the screen).
+        if self.pipelines.is_empty() {
+            return Some((GpuStage::Attach, 0, member_of_batch, world_built));
+        }
+        let mut i = next;
+        let mut processed = 0usize;
+        while i < art.scan.meshes.len() && processed < MESHES_PER_TICK {
+            // Block 21: local drawable shapes (bakery/billboard/… —
+            // centers < WORLD_LOCAL_SPLIT_M of the origin) need the
+            // GameObject placement pairing; skip them.
+            if !art.scan.mesh_world.get(i).copied().unwrap_or(false) {
+                i += 1;
+                continue;
+            }
+            let plan = art.world_plan.as_ref();
+            // Direct FIELD access only (see the paired stage's note).
+            let pipeline: &GpuPipeline = if self.world_pipeline.is_some() {
+                self.world_pipeline.as_ref().unwrap()
+            } else {
+                &self.pipelines[0]
+            };
+            let Some(r) = self.renderer.as_mut() else {
+                self.boot_fail("renderer gone during world stage".into());
+                return None;
+            };
+            let batch = build_mesh_batches(r, pipeline, plan, &art.scan.meshes[i]);
+            if batch.is_empty() {
+                break; // the old semantics: stop the world pass early
+            }
+            // Block 21: warn once when the pipeline cannot receive the
+            // per-frame player-camera WVP rows.
+            if !self.warned_no_wvp
+                && !batch[0]
+                    .vertex_uniforms
+                    .iter()
+                    .any(|u| {
+                        u.wgsl_name == "p3dWorldViewProjectionMatrix_r0" || u.wgsl_name == "u_c0"
+                    })
+            {
+                let names: Vec<&str> = batch[0]
+                    .vertex_uniforms
+                    .iter()
+                    .map(|u| u.wgsl_name.as_str())
+                    .collect();
+                log::warn!(
+                    "pipeline '{}' vertex stage has no p3dWorldViewProjectionMatrix; uniforms: {names:?}",
+                    pipeline.name
+                );
+                self.warned_no_wvp = true;
+            }
+            for _ in 0..batch.len() {
+                member_of_batch.push(art.scan.member_of_mesh.get(i).copied());
+            }
+            self.batches.extend(batch);
+            // Block 44: the pool accounting — which member contributed
+            // this world mesh (the exact unload subtraction later).
+            if let Some(&gi) = art.scan.member_of_mesh.get(i) {
+                *self.meshes_of_member.entry(gi).or_default() += 1;
+            }
+            world_built += 1;
+            i += 1;
+            processed += 1;
+        }
+        if i >= art.scan.meshes.len() {
+            boot_log::bootlog(&format!("world mesh batches: {world_built}"));
+            Some((GpuStage::Attach, 0, member_of_batch, world_built))
+        } else {
+            Some((GpuStage::World, i, member_of_batch, world_built))
+        }
+    }
+
+    /// GPU stage 4 (block 103, one tick): the member-stream attach, the
+    /// box pool, the debug fallback, the boot movie and the frontend
+    /// entry — everything after the mesh chunks.  All non-fatal by the
+    /// old boot's contract.  Consumes the artifacts.
+    fn gpu_stage_attach(
+        &mut self,
+        art: CpuBootArtifacts,
+        member_of_batch: Vec<Option<usize>>,
+        world_built: usize,
+    ) {
+        boot_log::stage("gpu: stream attach + boot movie + frontend");
+        let mesh_pipe_name = self.mesh_pipeline_ref().name.clone();
+        let Some(r) = self.renderer.as_mut() else {
+            self.boot_fail("renderer gone before attach".into());
+            return;
+        };
+        if world_built > 0 {
+            log::info!(
+                "mesh batches: {} world-space mesh(es) through pipeline '{}' (debug materials), per-frame player-camera WVP",
+                world_built,
+                mesh_pipe_name
+            );
+            // Block 44: the member stream attaches over the SAME scanned
+            // index and is SEEDED with the members whose meshes the boot
+            // actually loaded — the first frame's diff starts from the
+            // boot's real state, not from zero.
+            match prototype_stream::members::MemberStreamConfig::new(
+                MEMBER_STREAM_BUDGET,
+                MEMBER_STREAM_HYSTERESIS,
+            )
+            .and_then(|config| {
+                crate::member_stream::MemberMeshStream::from_index(
+                    &art.set.rcf_archives,
+                    &art.world.index,
+                    config,
+                )
+            }) {
+                Ok(mut ms) => {
+                    // The old boot seeded from EVERY scanned member's
+                    // provenance entry; `.get` (not `[gi]`) keeps a
+                    // scan/index desync from panicking the worker era.
+                    let seeded: std::collections::BTreeSet<u32> = art
+                        .scan
+                        .member_of_mesh
+                        .iter()
+                        .filter_map(|&gi| art.world.index.entries.get(gi).map(|e| e.hash))
+                        .collect();
+                    let seeded_n = seeded.len();
+                    ms.seed_loaded(seeded);
+                    // Block 45: the paired half attaches over the same
+                    // pair report and is SEEDED with the geometry members
+                    // whose paired meshes the boot pool already holds.
+                    let paired_attached = ms.attach_paired(&art.pair_rep.pairs);
+                    let paired_seeded: std::collections::BTreeSet<u32> = art
+                        .pm_rep
+                        .meshes
+                        .iter()
+                        .filter_map(|pm| art.world.index.entries.get(pm.pair.geometry_member))
                         .map(|e| e.hash)
-                        .unwrap_or(0);
-                    for b in batch {
-                        self.paired.push(PairedBatch {
-                            batch: b,
-                            pos: Vec3::new(pl.pos[0], pl.pos[1], pl.pos[2]),
-                            quat_xyzw: pl.quat_xyzw,
-                            scale: pm.pair.scale.unwrap_or([1.0, 1.0, 1.0])[0],
-                            member_hash,
-                        });
-                    }
-                }
-                if !self.paired.is_empty() {
+                        .collect();
+                    let paired_seeded_n = paired_seeded.len();
+                    ms.seed_paired(paired_seeded);
                     log::info!(
-                        "paired batches: {} local drawable(s) placed by REAL record(s) on pipeline '{}'{}",
-                        self.paired.len(),
-                        mesh_pipeline.name,
-                        if world_ref.is_some() { " (WORLD lit pass)" } else { "" }
-                    );
-                }
-            }
-            for e in &scan.first_errors {
-                log::warn!("mesh scan: {e}");
-            }
-            if !scan.meshes.is_empty() {
-                let mut built = 0usize;
-                let mut skipped_local = 0usize;
-                // Block 20: batch→member provenance, aligned with
-                // self.batches as batches are pushed below.
-                let mut member_of_batch: Vec<Option<usize>> = Vec::new();
-                for (mesh_i, mesh) in scan.meshes.iter().enumerate() {
-                    // Block 21: local drawable shapes (bakery/billboard/…
-                    // — centers < WORLD_LOCAL_SPLIT_M of the origin) need
-                    // the GameObject placement pairing; skip them.
-                    if !scan.mesh_world.get(mesh_i).copied().unwrap_or(false) {
-                        skipped_local += 1;
-                        continue;
-                    }
-                    // Block 44: the shared per-mesh batch builder (the
-                    // create + static-daylight block — now identical to
-                    // what the per-frame streaming loads run).
-                    let batch =
-                        build_mesh_batches(&mut renderer, mesh_pipeline, world_ref, mesh);
-                    if batch.is_empty() {
-                        break;
-                    }
-                    // Block 21: NO per-mesh gallery camera — the meshes
-                    // are WORLD-space (PROVEN, mesh_world); the player
-                    // camera's plain view-projection rows are written per
-                    // frame in RedrawRequested.  Warn once when the
-                    // pipeline cannot receive them (frontend pairs name
-                    // the rows; the world pair's rows are u_c0..3).
-                    if !self.warned_no_wvp
-                        && !batch[0].vertex_uniforms.iter().any(|u| {
-                            u.wgsl_name == "p3dWorldViewProjectionMatrix_r0" || u.wgsl_name == "u_c0"
-                        })
-                    {
-                        let names: Vec<&str> = batch[0]
-                            .vertex_uniforms
-                            .iter()
-                            .map(|u| u.wgsl_name.as_str())
-                            .collect();
-                        log::warn!(
-                            "pipeline '{}' vertex stage has no p3dWorldViewProjectionMatrix; uniforms: {names:?}",
-                            mesh_pipeline.name
-                        );
-                        self.warned_no_wvp = true;
-                    }
-                    for _ in 0..batch.len() {
-                        member_of_batch.push(scan.member_of_mesh.get(mesh_i).copied());
-                    }
-                    self.batches.extend(batch);
-                    // Block 44: the pool accounting — which member
-                    // contributed this world mesh (the exact unload
-                    // subtraction later).
-                    if let Some(&gi) = scan.member_of_mesh.get(mesh_i) {
-                        *self.meshes_of_member.entry(gi).or_default() += 1;
-                    }
-                    built += 1;
-                }
-                if built > 0 {
-                    log::info!(
-                        "mesh batches: {} world-space mesh(es) through pipeline '{}'{} (debug materials; {} local skipped), per-frame player-camera WVP",
-                        built,
-                        mesh_pipeline.name,
-                        if world_ref.is_some() { " — the DLL default pair (lit pass)" } else { "" },
-                        skipped_local
-                    );
-                    drew_real_meshes = true;
-                    // Block 44: the GPU pool starts with the boot's
-                    // world meshes; the streaming room math runs on it.
-                    self.member_meshes = built;
-                    // Block 20: the real world index + batch provenance
-                    // drive the per-frame draw selection (members_near
-                    // camera ordering).
-                    // Block 44: the member stream attaches over the
-                    // SAME scanned index (built before the move below)
-                    // and is SEEDED with the members whose meshes the
-                    // boot actually loaded — the first frame's diff
-                    // starts from the boot's real state, not from zero.
-                    match prototype_stream::members::MemberStreamConfig::new(
+                        "member stream: attached over {} member(s) ({} spanned, {} duplicate dir hashes), {} seeded from the boot scan (budget {}, hysteresis {:.1}); paired: {} pair(s) over {} member(s), {} seeded",
+                        ms.member_count(),
+                        ms.spanned_members(),
+                        ms.duplicate_hashes(),
+                        seeded_n,
                         MEMBER_STREAM_BUDGET,
                         MEMBER_STREAM_HYSTERESIS,
-                    )
-                    .and_then(|config| {
-                        crate::member_stream::MemberMeshStream::from_index(
-                            &set.rcf_archives,
-                            &world.index,
-                            config,
-                        )
-                    }) {
-                        Ok(mut ms) => {
-                            let seeded: std::collections::BTreeSet<u32> = scan
-                                .member_of_mesh
-                                .iter()
-                                .map(|&gi| world.index.entries[gi].hash)
-                                .collect();
-                            let seeded_n = seeded.len();
-                            ms.seed_loaded(seeded);
-                            // Block 45: the paired half attaches over the
-                            // same pair report and is SEEDED with the
-                            // geometry members whose paired meshes the
-                            // boot pool already holds — the paired diffs
-                            // start from the boot's real state.
-                            let paired_attached = ms.attach_paired(&pair_rep.pairs);
-                            let paired_seeded: std::collections::BTreeSet<u32> = pm_rep
-                                .meshes
-                                .iter()
-                                .filter_map(|pm| {
-                                    world.index.entries.get(pm.pair.geometry_member)
-                                })
-                                .map(|e| e.hash)
-                                .collect();
-                            let paired_seeded_n = paired_seeded.len();
-                            ms.seed_paired(paired_seeded);
-                            log::info!(
-                                "member stream: attached over {} member(s) ({} spanned, {} duplicate dir hashes), {} seeded from the boot scan (budget {}, hysteresis {:.1}); paired: {} pair(s) over {} member(s), {} seeded",
-                                ms.member_count(),
-                                ms.spanned_members(),
-                                ms.duplicate_hashes(),
-                                seeded_n,
-                                MEMBER_STREAM_BUDGET,
-                                MEMBER_STREAM_HYSTERESIS,
-                                paired_attached,
-                                ms.paired_member_count(),
-                                paired_seeded_n,
-                            );
-                            self.member_stream = Some(ms);
-                        }
-                        Err(e) => {
-                            log::warn!("member stream: attach failed ({e}) — streaming stays off")
-                        }
-                    }
-                    self.world_index = Some(world.index);
-                    self.draw_selector = Some(crate::meshes::DrawSelector::new(member_of_batch));
+                        paired_attached,
+                        ms.paired_member_count(),
+                        paired_seeded_n,
+                    );
+                    self.member_stream = Some(ms);
+                }
+                Err(e) => {
+                    log::warn!("member stream: attach failed ({e}) — streaming stays off")
                 }
             }
-            // Block 21: the placed-object cube pool (the nearest
-            // spawners draw as 2 m cubes at their REAL positions).
-            if !self.world_objects.is_empty() {
-                self.boxes = renderer.create_box_batches(p0, BOX_POOL);
+            self.world_index = Some(art.world.index);
+            self.draw_selector = Some(crate::meshes::DrawSelector::new(member_of_batch));
+            self.member_meshes = world_built;
+        } else {
+            // No real meshes -> one drawable debug triangle per
+            // pipeline: buffers + bind groups from the validated plans.
+            self.batches = r.create_debug_batches(&self.pipelines);
+            log::info!("debug batches: {} ready", self.batches.len());
+            self.world_index = None;
+            self.draw_selector = None;
+        }
+
+        // Block 21: the placed-object cube pool (the nearest spawners
+        // draw as 2 m cubes at their REAL positions).
+        if !self.world_objects.is_empty() {
+            if let Some(p0) = self.pipelines.first() {
+                self.boxes = r.create_box_batches(p0, BOX_POOL);
                 log::info!(
                     "placed-object cubes: {} ready on pipeline '{}' (nearest per frame)",
                     self.boxes.len(),
@@ -2338,37 +2618,22 @@ impl App {
                 );
             }
         }
-        if !drew_real_meshes {
-            // One drawable debug triangle per pipeline: buffers + bind
-            // groups from the validated plans.  The first vertex-pull +
-            // uniform path proof on a real GPU.
-            self.batches = renderer.create_debug_batches(&self.pipelines);
-            log::info!("debug batches: {} ready", self.batches.len());
-            // No real meshes → nothing to select among; per-frame
-            // selection stays off (all debug batches draw).
-            self.world_index = None;
-            self.draw_selector = None;
-        }
 
-        // 5. Block 54 (NEXT-UP (a)): the BOOT-PATH MOVIE — find a real
-        //    Bink member in the user's movie archive(s) and open the
-        //    streaming player over its RCF span (no extraction; the
-        //    movie is never in RAM).  From the first RedrawRequested
-        //    until it ends (or the user skips it) the screen shows the
-        //    movie quad and track 0's PCM lands in the audio ring.
-        //    Every failure here is non-fatal: the world scene draws
-        //    exactly as before, with the reason logged.
+        // 5. Block 54: the BOOT-PATH MOVIE — find a real Bink member in
+        //    the user's movie archive(s) and open the streaming player
+        //    over its RCF span.  Every failure here is non-fatal.
         self.movie = None;
         self.movie_gpu = None;
         self.movie_logged = false;
-        match find_boot_movie(&set.rcf_archives) {
+        let format = r.surface_format();
+        match &art.movie {
             Some(m) => match MoviePlayerState::open(&m) {
                 Ok(state) => {
                     let (mw, mh) = (state.width(), state.height());
-                    let texture = renderer.create_video_texture(mw, mh, "boot movie");
+                    let texture = r.create_video_texture(mw, mh, "boot movie");
                     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-                    let quad = renderer.create_video_quad(format);
-                    let bind_group = renderer.create_video_bind_group(&quad, &view);
+                    let quad = r.create_video_quad(format);
+                    let bind_group = r.create_video_bind_group(&quad, &view);
                     log::info!(
                         "boot movie: member {:#010x} of {} ({} B) — {}x{}, {} frame(s) at {}/{} fps, {} audio track(s); streaming through the RCF span (never in RAM)",
                         m.member_hash,
@@ -2381,12 +2646,15 @@ impl App {
                         state.fps().1,
                         state.audio_channels(),
                     );
-                    self.movie_gpu = Some(MovieGpu { quad, texture, view, bind_group });
-                    // Block 55 (NEXT-UP (a)): the audio DEVICE edge over
-                    // THE ring this player writes (SharedRing::from_arc
-                    // wraps the player's own handle — one buffer, one
-                    // writer, one reader).  Non-fatal: device-less
-                    // hosts play silent, exactly as before.
+                    self.movie_gpu = Some(MovieGpu {
+                        quad,
+                        texture,
+                        view,
+                        bind_group,
+                    });
+                    // Block 55: the audio DEVICE edge over THE ring this
+                    // player writes.  Non-fatal: device-less hosts play
+                    // silent, exactly as before.
                     #[cfg(feature = "audio-cpal")]
                     self.open_movie_audio(&state);
                     self.movie = Some(state);
@@ -2398,36 +2666,28 @@ impl App {
             ),
         }
 
-        // 6. Block 57: the GAMEPLAY audio device edge — opened once
-        //    per boot over the AudioOut ring (guarded, non-fatal),
-        //    held for the session, cut at teardown.  From here on the
-        //    per-frame tick at §2b drains through the REAL device.
+        // 6. Block 57: the GAMEPLAY audio device edge — opened once per
+        //    boot over the AudioOut ring (guarded, non-fatal).
         #[cfg(feature = "audio-cpal")]
         self.open_gameplay_audio();
 
         // 7. Block 68: when NO boot movie plays, the FRONTEND is what
-        //    the user sees right now — its attract music (the PROVEN
-        //    fe_music bed) starts here.  When a movie DID open, the
-        //    movie-end/skip arms defer the same entry to their tail
-        //    (the frontend appears when the picture ends).
-        //    Idempotent: a re-boot re-runs this, but the mission
-        //    system's no-bump contract restarts nothing.
+        //    the user sees — its attract music starts here.
         if self.movie.is_none() {
             if let Err(e) = self.enter_frontend(1.0) {
                 log::debug!("frontend music: {e}");
             }
         }
 
-        self.aspect = {
-            let size = window.inner_size();
-            if size.height > 0 {
-                size.width as f32 / size.height as f32
-            } else {
-                1.0
-            }
-        };
-        self.renderer = Some(renderer);
-        window.request_redraw();
+        self.boot_phase = BootPhase::Done;
+        self.status_render = false;
+        boot_log::bootlog("BOOT COMPLETE");
+        if let Some(ui) = self.platform.as_ref() {
+            ui.toast("Engine booted");
+        }
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
     }
 
     /// Drop everything GPU-side (Android pause invalidates the surface;
@@ -2504,6 +2764,10 @@ impl App {
             log::info!("tearing down GPU state (surface is invalid across pause)");
         }
         self.renderer = None;
+        // Block 103: a boot in flight dies with the suspend too — the
+        // next resume spawns a fresh worker (a detached old worker's
+        // artifacts drop on its failed send; CPU-only, harmless).
+        self.boot_phase = BootPhase::Idle;
         self.pipelines.clear();
         self.world_pipeline = None;
         self.batches.clear();
@@ -2570,28 +2834,32 @@ impl ApplicationHandler for App {
             self.notify_setup();
             return;
         }
-        if self.status_render {
-            // Setup → Ready transition: the status surface must go —
-            // the boot rebuilds window + renderer for the real pipeline.
-            self.teardown();
-            self.window = None;
-            self.status_render = false;
-            self.last_setup_toast = None;
+        // Block 103: the boot is a PHASE MACHINE (worker thread + GPU
+        // stages) and the status surface stays up as its backdrop — the
+        // screen shows the booting tint instead of a frozen window, and
+        // winit keeps pumping events (the old synchronous try_boot
+        // inside `resumed` was the ~10 s ANR that killed the app).
+        if matches!(self.boot_phase, BootPhase::Done) && self.renderer.is_none() {
+            // The suspend tore the GPU state down but the phase still
+            // says Done — a fresh boot is the only renderer factory.
+            self.boot_phase = BootPhase::Idle;
         }
-        if self.window.is_none() {
-            match event_loop.create_window(self.window_attrs.clone()) {
-                Ok(w) => {
-                    log::info!("window created (surface target ready)");
-                    self.window = Some(Arc::new(w));
+        if !matches!(self.boot_phase, BootPhase::Done) {
+            self.ensure_status_surface(event_loop);
+        }
+        if let AppState::Ready(set) = &self.state {
+            let set = set.clone();
+            // Block 58/66: the audio CONTENT half — device-free, quick
+            // and self-guarding (a re-boot never re-loads what is
+            // loaded).  These were the old try_boot's step 0/0b.
+            self.load_gameplay_sounds(&set);
+            self.load_music_graph(&set);
+            if matches!(self.boot_phase, BootPhase::Idle | BootPhase::Failed(_)) {
+                if let BootPhase::Failed(prev) = &self.boot_phase {
+                    log::warn!("boot retry after failure: {prev}");
                 }
-                Err(e) => {
-                    log::error!("window creation failed: {e}");
-                    return;
-                }
+                self.spawn_boot(set);
             }
-        }
-        if self.renderer.is_none() {
-            self.try_boot();
         }
     }
 
@@ -2626,9 +2894,13 @@ impl ApplicationHandler for App {
                 if self.status_render {
                     // The screen enum decouples this module from
                     // AppState's feature gate (see platform_ui docs).
-                    let screen = match self.state {
-                        AppState::Setup { .. } => StatusScreen::Setup,
-                        AppState::Ready(_) => StatusScreen::Ready,
+                    // Block 103: a Ready state can still be BOOTING or
+                    // BOOT-FAILED — the phase machine owns the colour.
+                    let screen = match (&self.state, &self.boot_phase) {
+                        (AppState::Setup { .. }, _) => StatusScreen::Setup,
+                        (_, BootPhase::Failed(_)) => StatusScreen::BootFailed,
+                        (AppState::Ready(_), BootPhase::Done) => StatusScreen::Ready,
+                        _ => StatusScreen::Boot,
                     };
                     if let (Some(r), Some(color)) =
                         (self.renderer.as_mut(), status_clear_color(screen, self.storage))
@@ -3329,8 +3601,14 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        // Block 103: advance the boot phase machine one step per loop
+        // iteration — every stage must return FAST so winit keeps
+        // pumping events (the ~10 s ANR that killed the first on-device
+        // boot was the event loop wedged inside a synchronous boot).
+        self.pump_boot();
         // Continuous frame loop: one redraw requested per iteration while
-        // a renderer is live (Fifo present mode paces it to vsync).
+        // a renderer is live (Fifo present mode paces it to vsync).  The
+        // status surface keeps this alive during the boot phases too.
         if self.renderer.is_some() {
             if let Some(w) = &self.window {
                 w.request_redraw();

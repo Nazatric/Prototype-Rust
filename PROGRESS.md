@@ -1,6 +1,67 @@
-Last updated: 2026-11-24 ~22:1x UTC+8 — user session (no cron);
-block 102 complete (first on-device launch fix; the CI APK pipeline is
-live on the user's repo and the aarch64 APK is on the ci-apks release).
+Last updated: 2026-11-25 ~0x:0x UTC+8 — user session (no cron);
+block 103 complete (the ~10 s on-device boot crash: ANR + crash
+journal).  Block 102 CONFIRMED WORKING on the user's phone: amber
+status screen, storage grant flow, folder creation, Setup toasts.
+
+(Block 103 — THE ~10 s ON-DEVICE BOOT CRASH: ANR, WORKER-THREAD CPU
+BOOT, CHUNKED GPU STAGES + A CRASH JOURNAL THE USER CAN SHARE.  The
+block-102 APK got the user through Setup perfectly on their phone
+(amber screen seen, storage granted, folder created, files copied) —
+then the READY-state boot showed a black screen and the app died ~10 s
+in.  Diagnosis: the old try_boot ran the WHOLE boot synchronously
+inside `resumed` — shader prep + the TWO archive decompress passes
+(collect_meshes_near over the user's real ~2 GB rcf corpus +
+collect_paired_meshes) — wedging the event-loop thread past Android's
+~10 s main-thread ANR limit; the OS killed the app mid-boot.  On a PC
+the same code finished fast enough to never show.  NOTHING in the boot
+panicked by inspection (Renderer::new maps adapter/device errors
+honestly; every stage logs), so the fix is architectural, not a patch.)
+
+(1) BOOT PHASE MACHINE (app.rs).  BootPhase: Idle -> Cpu { mpsc rx } ->
+Gpu { artifacts, stage, chunk cursors, provenance, built-count } ->
+Done | Failed(String).  The CPU stages (prepare_programs,
+collect_meshes_near, pair_drawables, collect_paired_meshes,
+find_boot_movie) run on a std::thread WORKER with the result shipped
+through an mpsc channel; the worker body is catch_unwind-wrapped — a
+worker panic becomes Failed("cpu boot panicked: ..."), never a silent
+hang (a channel-disconnect also maps to Failed).  The GPU stages run
+on the main thread ONE per loop iteration (pump_boot in about_to_wait):
+Pipelines (surface + device + WGSL pairs + world pipeline) -> Paired
+(spawn-once + paired batches, MESHES_PER_TICK=2 per tick) -> World
+(world batches chunked, the block-20 provenance accumulated across
+ticks) -> Attach (member-stream attach + box pool + debug fallback +
+boot movie + frontend entry, one tick).  The status surface STAYS UP
+as the boot backdrop (the dark loading-screen tint instead of a frozen
+window; failure = the same red as storage-denied), and resumed() now
+spawns a fresh boot on Idle OR Failed (a retry after the user fixes
+files logs WHY the last boot failed).  Suspend tears the phase down
+with the GPU state (a detached old worker drops its artifacts on its
+failed send — CPU-only, harmless).  The old synchronous try_boot is
+GONE (the boot field went with it; load_gameplay_sounds +
+load_music_graph stay on main, self-guarding as before).
+
+(2) CRASH JOURNAL (boot_log.rs, host-portable).  boot-log.txt in the
+asset folder: every STAGE line, every boot metric, and — through a
+panic hook that chains the default — every PANIC with message,
+location and the running stage.  android_main installs the file sink +
+hook BEFORE the first scan (first-run lines before ensure_folder
+creates the folder are lost — the append cannot create parents —
+stated honestly).  The user has no adb; "send me boot-log.txt" is now
+a complete diagnostic.  +3 unit tests (file appends, stage tracking,
+panic hook).
+
+(3) WGPU HARDENING (prototype-render/wgpu_backend.rs).  The uncaptured-
+error handler now LOGS instead of wgpu's default PANIC — one driver
+validation error (or an oversized real-game mesh) degrades a frame
+instead of killing the app.  prototype-render gains `log = "0.4"`.
+
+Verified in-sandbox before push: workspace 867/0 (+3 boot_log tests);
+aarch64 --features android-activity check green; winit-app check green
+(zero warnings).  KNOWN-REMAINING risk stated honestly: the memory
+footprint of the two decompress passes on an 8-12 GB phone is
+unmeasured — if the NEXT run dies without a PANIC line in boot-log.txt
+(and no Failed toast), that is an OS OOM kill, and the streaming
+budgets get their first real-device tuning pass.)
 
 (Block 102 — FIRST ON-DEVICE LAUNCH FIX: STORAGE GRANT FLOW, TOASTS
 AND STATUS COLOURS.  The user's first install of the CI-built aarch64

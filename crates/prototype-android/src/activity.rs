@@ -62,6 +62,14 @@ pub fn android_main(app: AndroidApp) {
     log::info!("prototype-rs native activity starting (loader-style, no bundled assets)");
 
     let folder = crate::asset_folder::default_folder();
+    // Block 103: the boot journal + panic crash-reporter land in the
+    // asset folder BEFORE anything else runs — a user without adb has
+    // no logcat, so boot-log.txt is the ONE observable artifact.  The
+    // first-run lines before `ensure_folder` creates the folder are
+    // lost (the append cannot create parent dirs) — accepted honestly;
+    // every line after the first scan lands.
+    crate::boot_log::install_file_log(folder.join("boot-log.txt"));
+    crate::boot_log::install_panic_hook();
     // Pre-loop scan only for immediate logcat visibility; the App gets
     // the result handed over (no double scan) and re-scans on every
     // resume from here on.

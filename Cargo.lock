@@ -3336,6 +3336,7 @@ dependencies = [
 name = "prototype-render"
 version = "0.1.0"
 dependencies = [
+ "log",
  "naga 25.0.1",
  "pollster",
  "prototype-common",

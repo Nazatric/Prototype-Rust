@@ -39,6 +39,8 @@
 pub mod asset_folder;
 pub mod audio_registry;
 pub mod boot;
+// Block 103: the boot journal + panic crash-reporter (host-portable).
+pub mod boot_log;
 pub mod game_files;
 // Block 102: the JNI platform UI — Android-only (same gate as
 // `activity`; everything host-portable lives in `platform_ui`).

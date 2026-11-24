@@ -29,7 +29,15 @@
 pub enum StatusScreen {
     /// The loader is waiting (folder / files / permission).
     Setup,
-    /// Game files found — the normal boot render owns the screen.
+    /// The engine boot is running (block 103's phase machine — the CPU
+    /// worker reads the archives off-thread; the screen shows the
+    /// booting tint instead of a frozen window).
+    Boot,
+    /// The boot failed — the same red as storage-denied; the toast (and
+    /// `boot-log.txt`) say what actually went wrong.
+    BootFailed,
+    /// Game files found and boot finished — the normal render owns the
+    /// screen.
     Ready,
 }
 
@@ -98,6 +106,9 @@ pub fn storage_plan(api_level: i32, all_files_granted: bool) -> StoragePlan {
 /// * storage denied → deep red — action required in system settings;
 /// * storage granted, no usable game files → amber — copy your files
 ///   into the asset folder;
+/// * boot running → the PC loading screen's dark blue-grey (the
+///   "something is happening" tint — not black, not an error);
+/// * boot failed → the deep red again (the toast names the failure);
 /// * a `Ready` screen returns `None` — the normal boot render owns the
 ///   screen from there.
 pub fn status_clear_color(screen: StatusScreen, storage: StorageState) -> Option<[f64; 4]> {
@@ -106,6 +117,8 @@ pub fn status_clear_color(screen: StatusScreen, storage: StorageState) -> Option
             StorageState::Denied => [0.45, 0.10, 0.10, 1.0],
             StorageState::Granted => [0.62, 0.42, 0.08, 1.0],
         }),
+        StatusScreen::Boot => Some([0.08, 0.09, 0.11, 1.0]),
+        StatusScreen::BootFailed => Some([0.45, 0.10, 0.10, 1.0]),
         StatusScreen::Ready => None,
     }
 }
@@ -158,7 +171,14 @@ mod tests {
             granted.unwrap()[0] > granted.unwrap()[2] && granted.unwrap()[1] > granted.unwrap()[2],
             "waiting must read as AMBER (r,g dominate b)"
         );
-        // A Ready screen owns the frame — no status colour.
+        // The boot tint and the boot-failure red are the phase
+        // machine's states (block 103); Ready owns the frame.
+        assert!(status_clear_color(StatusScreen::Boot, StorageState::Granted).is_some());
+        assert_eq!(
+            status_clear_color(StatusScreen::BootFailed, StorageState::Granted),
+            status_clear_color(StatusScreen::Setup, StorageState::Denied),
+            "boot failure reads as the same red"
+        );
         assert_eq!(status_clear_color(StatusScreen::Ready, StorageState::Granted), None);
     }
 }
