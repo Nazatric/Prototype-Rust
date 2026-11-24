@@ -1096,6 +1096,21 @@ fn cpu_boot_work(set: GameFileSet, tx: mpsc::Sender<Result<CpuBootArtifacts, Str
             log::warn!("mesh scan: {e}");
         }
 
+        boot_log::stage("cpu: real menu-screen census");
+        // Block 107/110: the REAL Scaleform menu screens live in the
+        // user's corpus as art\hud\*.gfx members; the proven hash
+        // locates them WITHOUT any decompress.  The journal line tells
+        // the next session exactly which real screens we can extract.
+        let (found, names) = crate::menu_assets::census(&set.rcf_archives);
+        boot_log::bootlog(&format!(
+            "menu census: {found}/25 real .gfx screen(s) present{}",
+            if names.is_empty() {
+                String::new()
+            } else {
+                format!(" — {}", names.join(", "))
+            }
+        ));
+
         boot_log::stage("cpu: pair drawables");
         let pair_rep = world.index.pair_drawables(PAIR_CAP);
         // Block 104: NO boot-time paired mesh decode — the stream's
@@ -2401,6 +2416,9 @@ impl App {
             storage_denied: self.storage == StorageState::Denied,
             files_ok: matches!(self.state, AppState::Ready(_)),
             folder: "",
+            stream_budget_mb: self.settings.stream_budget_mb,
+            master_volume: self.settings.master_volume,
+            look_sensitivity: self.settings.look_sensitivity,
         };
         let a = self.menu.nav(action, &ctx);
         match a {
@@ -2546,6 +2564,9 @@ impl App {
             storage_denied: self.storage == StorageState::Denied,
             files_ok: matches!(self.state, AppState::Ready(_)),
             folder: &self.folder.display().to_string(),
+            stream_budget_mb: self.settings.stream_budget_mb,
+            master_volume: self.settings.master_volume,
+            look_sensitivity: self.settings.look_sensitivity,
         };
         let mut list = prototype_render::UiDrawList {
             screen: [w as f32, h as f32],

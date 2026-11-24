@@ -4,6 +4,17 @@ ANR fix HELD — no more 10 s death — but the boot's full index+mesh
 pass never returned on the phone, and the storage grant flow never
 fired because of a hardcoded literal.  Both fixed here).
 
+(Block 111 — THE CENSUS + REAL OPTION VALUES.  (1) The worker now
+runs the menu_assets census at boot: `menu census: N/25 real .gfx
+screen(s) present — …` lands in boot-log.txt (proven hash lookups,
+no decompress) — the next device run tells us exactly which REAL
+Scaleform screens the user's corpus carries, opening the extraction
+path.  (2) The Options rows SHOW the real settings (STREAM BUDGET ‹
+24 MB ›, MASTER VOLUME ‹ 80% ›, LOOK SENSITIVITY ‹ 1.0x ›) pulled
+from game-settings.json through MenuContext — the persisted knobs
+are visible in the real menu; tap-to-adjust is the NEXT-UP settings
+pass.  179/0 (winit-app), aarch64 gate clean.)
+
 (Block 110 — THE PAUSE POPUP (the last UX hole: ESC in the world did
 nothing — the player was trapped until the app switcher).  Block 110
 adds the real `protopopup` pause: ESC/back in-world opens

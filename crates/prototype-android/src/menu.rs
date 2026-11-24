@@ -116,6 +116,12 @@ pub struct MenuContext<'a> {
     pub files_ok: bool,
     /// The asset folder path (the loader screen shows it).
     pub folder: &'a str,
+    /// The DISPLAY knob (stream budget MB) — shown on the video page.
+    pub stream_budget_mb: u32,
+    /// The AUDIO knob (master volume 0..=1).
+    pub master_volume: f32,
+    /// The CONTROLS knob (look sensitivity multiplier).
+    pub look_sensitivity: f32,
 }
 
 /// The mutable menu state.
@@ -138,7 +144,7 @@ impl MenuState {
 
     /// The visible rows of the current screen (label only; the drawer
     /// appends styling and the hit regions).
-    pub fn rows(&self, _ctx: &MenuContext) -> Vec<String> {
+    pub fn rows(&self, ctx: &MenuContext) -> Vec<String> {
         match self.screen {
             MenuScreen::Start => vec!["PRESS ANY BUTTON".to_string()],
             MenuScreen::Legal => vec!["OK".to_string()],
@@ -157,11 +163,20 @@ impl MenuState {
                 "PLATFORM".to_string(),
             ],
             MenuScreen::OptionsVideo => vec![
-                "STREAM BUDGET".to_string(),
-                "MESH CAP".to_string(),
+                format!("STREAM BUDGET  ‹ {} MB ›", ctx.stream_budget_mb),
+                format!(
+                    "MESH CAP  ‹ {} ›",
+                    if ctx.stream_budget_mb >= 24 { "6/frame" } else { "3/frame" }
+                ),
             ],
-            MenuScreen::OptionsAudio => vec!["MASTER VOLUME".to_string()],
-            MenuScreen::OptionsControls => vec!["LOOK SENSITIVITY".to_string()],
+            MenuScreen::OptionsAudio => vec![format!(
+                "MASTER VOLUME  ‹ {}% ›",
+                (ctx.master_volume * 100.0) as u32
+            )],
+            MenuScreen::OptionsControls => vec![format!(
+                "LOOK SENSITIVITY  ‹ {:.1}x ›",
+                ctx.look_sensitivity
+            )],
             MenuScreen::OptionsPlatform => vec!["BACK".to_string()],
             MenuScreen::Extras => vec!["CREDITS".to_string(), "TRAILER".to_string()],
             MenuScreen::Credits => vec!["BACK".to_string()],
@@ -195,6 +210,8 @@ impl MenuState {
         }
         match action {
             MenuAction::Move(d) => {
+                // Value screens: the rows SHOW the settings (the
+                // adjust-on-tap pass is NEXT-UP; honest display today).
                 let n = self.rows(ctx).len();
                 if n > 0 {
                     let cur = self.selected as i32;
@@ -507,6 +524,9 @@ mod tests {
             storage_denied: false,
             files_ok: true,
             folder: "/tmp/game",
+            stream_budget_mb: 24,
+            master_volume: 0.8,
+            look_sensitivity: 1.0,
         }
     }
 
@@ -617,6 +637,9 @@ mod pause_tests {
             storage_denied: false,
             files_ok: true,
             folder: "/game",
+            stream_budget_mb: 24,
+            master_volume: 0.8,
+            look_sensitivity: 1.0,
         };
         let mut m = MenuState { screen: MenuScreen::InGame, selected: 0 };
         m.nav(MenuAction::Back, &ctx);
