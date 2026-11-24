@@ -1,0 +1,19 @@
+[package]
+name = "prototype-pe"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "PE/COFF header, section, and import-table parser — reverse-engineered from Prototype (2009) PC binaries"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+prototype-common.workspace = true
+bytemuck.workspace = true
+byteorder.workspace = true
+
+[dev-dependencies]
+prototype-common.workspace = true

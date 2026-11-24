@@ -1,0 +1,15 @@
+# prototype-video — Bink (BIK) movie container parser
+[package]
+name = "prototype-video"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Bink movie container parser for the Prototype (2009) reconstruction"
+
+[dependencies]
+prototype-common = { path = "../prototype-common", version = "0.1.0" }
+prototype-p3d    = { path = "../prototype-p3d",    version = "0.1.0" }
+prototype-rcf    = { path = "../prototype-rcf",    version = "0.1.0" }

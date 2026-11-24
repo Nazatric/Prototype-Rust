@@ -1,0 +1,5 @@
+# shaders.rcf member index (block 96 RE)
+# source: /home/z/my-project/upload/shaders.rcf (10793 B)
+# dir_offset=60 dir_size=12 entry_count=1
+# columns: index name_hash (hex) file_offset file_size
+   0 0xd1d2c18d       4096     6697

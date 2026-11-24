@@ -1,0 +1,85 @@
+# prototype-rs — Prototype (2009) engine reconstruction in Rust
+#
+# Multi-crate workspace reverse-engineered from the original
+# Prototype PC binaries (prototypef.exe, prototypeenginef.dll) and
+# Pure3D / Radical Cement Library data files.  Each crate is a
+# self-contained subsystem; together they reconstruct the on-disk
+# formats and the high-level engine message/behaviour subsystem.
+#
+# Legal: original game code and assets remain (c) Activision / Radical
+# Entertainment.  The Rust code in this workspace is a clean-room
+# re-implementation of the FILE FORMATS and the MESSAGE/BHEAVIOUR
+# dispatch model only — it does not reproduce executable code or
+# original assets, and the workspace is intended to interoperate
+# with legally-acquired game data, not to replace the game.
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/prototype-common",
+    "crates/prototype-p3d",
+    "crates/prototype-rcf",
+    "crates/prototype-pe",
+    "crates/prototype-lua",
+    "crates/prototype-engine",
+    "crates/prototype-math",
+    "crates/prototype-boot",
+    "crates/prototype-render",
+    "crates/prototype-audio",
+    "crates/prototype-input",
+    "crates/prototype-stream",
+    "crates/prototype-bin",
+    "crates/prototype-video",
+    "crates/prototype-android",
+    "crates/prototype-demo",
+    "crates/prototype-bevy-bridge",
+]
+
+[workspace.package]
+version       = "0.1.0"
+edition       = "2021"
+rust-version  = "1.74"
+license       = "MIT OR Apache-2.0"
+authors       = ["prototype-rs contributors"]
+repository    = "https://example.invalid/prototype-rs"
+description   = "Clean-room Rust reconstruction of Prototype (2009) file formats and engine subsystems"
+
+[workspace.dependencies]
+prototype-common = { path = "crates/prototype-common",  version = "0.1.0" }
+prototype-p3d    = { path = "crates/prototype-p3d",     version = "0.1.0" }
+prototype-rcf    = { path = "crates/prototype-rcf",     version = "0.1.0" }
+prototype-pe     = { path = "crates/prototype-pe",      version = "0.1.0" }
+prototype-lua    = { path = "crates/prototype-lua",     version = "0.1.0" }
+prototype-engine = { path = "crates/prototype-engine",  version = "0.1.0" }
+prototype-math   = { path = "crates/prototype-math",    version = "0.1.0" }
+prototype-boot   = { path = "crates/prototype-boot",    version = "0.1.0" }
+prototype-render = { path = "crates/prototype-render",  version = "0.1.0" }
+prototype-audio  = { path = "crates/prototype-audio",   version = "0.1.0" }
+prototype-input  = { path = "crates/prototype-input",   version = "0.1.0" }
+prototype-stream = { path = "crates/prototype-stream",  version = "0.1.0" }
+prototype-android = { path = "crates/prototype-android", version = "0.1.0" }
+prototype-video = { path = "crates/prototype-video",  version = "0.1.0" }
+
+# Third-party
+bytemuck    = "1"
+byteorder   = "1"
+memmap2    = "0.9"
+thiserror  = "1"
+crc32fast  = "1"
+wgpu       = "25"
+# The WGSL front-end + validator wgpu itself compiles shaders with — used
+# ONLY as a dev-dependency (of prototype-render) so every translated
+# shader text is compile-checked in CI/sandbox WITHOUT a GPU.  Kept at
+# the workspace level so the version stays in lockstep with wgpu (wgpu 25
+# embeds naga 25; one shared build).
+naga       = { version = "25", features = ["wgsl-in"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+opt-level = 0
+debug = true

@@ -1,0 +1,94 @@
+# SM3.0 shader catalog — prototypeenginef.dll (20205568 B)
+# unique validated blobs: 45  duplicates: 0
+# unknown opcodes beyond the 26 known: NONE
+# offset      stage size     ins  creator/target      constants (sampler regs marked S)
+0xe34b08   vs    852    9 'Microsoft (R) HLSL Shade'/vs_3_0  NEW
+           consts: ['p3dWorldViewProjectionMatrix@b0']
+0xe34e60   vs   2692   57 'Microsoft (R) HLSL Shade'/vs_3_0  COMMITTED dll_default_vp_e34e60.sm30
+           consts: ['p3dEyePositionObjectSpace@b16', 'p3dLight_PositionObjectSpace@b17', 'p3dLight_ProjectedTextureMatrix@b8', 'p3dShadowMapMatrix@b12', 'p3dWorldMatrix@b4', 'p3dWorldViewProjectionMatrix@b0']
+0xe358e8   vs    916   12 'Microsoft (R) HLSL Shade'/vs_3_0  NEW
+           consts: ['p3dWorldViewProjectionMatrix@b0']
+0xe35c80   vs    908   12 'Microsoft (R) HLSL Shade'/vs_3_0  NEW
+           consts: ['p3dWorldViewProjectionMatrix@b0']
+0xe36010   vs    612    6 'Microsoft (R) HLSL Shade'/vs_3_0  COMMITTED dll_error_vp_e36010.sm30
+           consts: ['p3dWorldViewProjectionMatrix@b0']
+0xe36278   vs    772    9 'Microsoft (R) HLSL Shade'/vs_3_0  NEW
+           consts: ['p3dWorldViewProjectionMatrix@b0']
+0xe36580   vs    916   12 'Microsoft (R) HLSL Shade'/vs_3_0  NEW
+           consts: ['p3dWorldViewProjectionMatrix@b0']
+0xe36918   vs   2332   48 'Microsoft (R) HLSL Shade'/vs_3_0  NEW
+           consts: ['p3dEyePositionObjectSpace@b12', 'p3dLight_PositionObjectSpace@b13', 'p3dLight_ProjectedTextureMatrix@b8', 'p3dWorldMatrix@b4', 'p3dWorldViewProjectionMatrix@b0']
+0xe37238   vs   1568   26 'Microsoft (R) HLSL Shade'/vs_3_0  COMMITTED dll_lightcount_vp_e37238.sm30
+           consts: ['lightCountColor@b12', 'p3dWorldViewMatrix@b0', 'p3dWorldViewMatrixInverseTranspose@b4', 'p3dWorldViewProjectionMatrix@b8', 'predicate@b13']
+0xe37858   vs   1556   33 'Microsoft (R) HLSL Shade'/vs_3_0  NEW
+           consts: ['p3dWorldMatrix@b8', 'p3dWorldViewMatrix@b0', 'p3dWorldViewProjectionMatrix@b4']
+0xe37e70   vs    996   15 'Microsoft (R) HLSL Shade'/vs_3_0  NEW
+           consts: ['p3dWorldViewProjectionMatrix@b0']
+0xe38258   vs   1336   21 'Microsoft (R) HLSL Shade'/vs_3_0  NEW
+           consts: ['$tapOffsets@b4', 'p3dWorldViewProjectionMatrix@b0']
+0xe38790   vs   3172   69 'Microsoft (R) HLSL Shade'/vs_3_0  NEW
+           consts: ['p3dEyePositionObjectSpace@b20', 'p3dLight_PositionObjectSpace@b21', 'p3dLight_ProjectedTextureMatrix@b12', 'p3dShadowMapMatrix@b16', 'p3dWorldMatrix@b8', 'p3dWorldViewMatrixInverseTranspose@b4', 'p3dWorldViewProjectionMatrix@b0']
+0xe393f8   vs   1112    9 'Microsoft (R) HLSL Shade'/vs_3_0  NEW
+           consts: ['p3dWorldViewProjectionMatrix@b0']
+0xe39850   vs    904   12 'Microsoft (R) HLSL Shade'/vs_3_0  NEW
+           consts: ['p3dWorldViewProjectionMatrix@b0']
+0xe39bd8   vs   1088    9 'Microsoft (R) HLSL Shade'/vs_3_0  NEW
+           consts: ['p3dWorldViewProjectionMatrix@b0']
+0xe3a018   vs    908    6 'Microsoft (R) HLSL Shade'/vs_3_0  NEW
+           consts: ['p3dWorldViewProjectionMatrix@b0']
+0xe3a3a8   vs   1736   36 'Microsoft (R) HLSL Shade'/vs_3_0  NEW
+           consts: ['p3dWorldViewProjectionMatrix@b0']
+0xe3aa70   vs    904   11 'Microsoft (R) HLSL Shade'/vs_3_0  NEW
+           consts: ['flatcolour@b4', 'p3dWorldViewProjectionMatrix@b0']
+0xe3adf8   ps   1296   20 'Microsoft (R) HLSL Shade'/ps_3_0  COMMITTED dll_bink_fp_e3adf8.sm30
+           consts: ['a_tex@s3[S]', 'cb_tex@s2[S]', 'cr_tex@s1[S]', 'y_tex@s0[S]']
+0xe3b308   ps   6848  133 'Microsoft (R) HLSL Shade'/ps_3_0  COMMITTED dll_default_fp_e3b308.sm30
+           consts: ['diffuseMap@s4[S]', 'materialDiffuse@b8', 'materialShininess@b7', 'materialSpecular@b9', 'normalMap@s5[S]', 'p3dLight_Ambient@b2', 'p3dLight_Attenuation@b1', 'p3dLight_Colour@b3', 'p3dLight_DecayConstant@b6', 'p3dLight_DecayTexture@s0[S]', 'p3dLight_Direction@b0', 'p3dLight_IsLitPass@c0', 'p3dLight_LightType@b4', 'p3dLight_ProjectedTexture@s2[S]', 'p3dLight_SpotlightConstant@b5', 'p3dLight_SpotlightTexture@s1[S]', 'p3dShadowEnabled@c1', 'p3dShadowEnabledChildren@b10', 'p3dShadowIsLinearDepth@c2', 'p3dShadowMap@s3[S]', 'p3dShadowMapChildBox00@b12', 'p3dShadowMapChildBox01@b13', 'p3dShadowMapChildBox03@b14', 'p3dShadowMapChildInfo00@b15', 'p3dShadowMapChildInfo01@b16', 'p3dShadowMapChildInfo02@b17', 'p3dShadowMapChildInfo03@b18', 'p3dShadowMapChildInfo04@b19', 'p3dShadowMapInfo@b11', 'specularMap@s6[S]']
+0xe3cdc8   ps    700    8 'Microsoft (R) HLSL Shade'/ps_3_0  NEW
+           consts: ['$p3dZScale@b0']
+0xe3d088   ps    836    8 'Microsoft (R) HLSL Shade'/ps_3_0  NEW
+           consts: ['depthMap@s1[S]', 'diffuseMap@s0[S]']
+0xe3d3d0   ps    412    2 'Microsoft (R) HLSL Shade'/ps_3_0  NEW
+           consts: NONE
+0xe3d570   ps    444    2 'Microsoft (R) HLSL Shade'/ps_3_0  NEW
+           consts: NONE
+0xe3d730   ps    636    5 'Microsoft (R) HLSL Shade'/ps_3_0  NEW
+           consts: ['diffuseMap@s0[S]']
+0xe3d9b0   ps   3792   69 'Microsoft (R) HLSL Shade'/ps_3_0  NEW
+           consts: ['diffuseMap@s3[S]', 'materialDiffuse@b8', 'materialShininess@b7', 'materialSpecular@b9', 'p3dLight_Ambient@b2', 'p3dLight_Attenuation@b1', 'p3dLight_Colour@b3', 'p3dLight_DecayConstant@b6', 'p3dLight_DecayTexture@s0[S]', 'p3dLight_Direction@b0', 'p3dLight_IsLitPass@c0', 'p3dLight_LightType@b4', 'p3dLight_ProjectedTexture@s2[S]', 'p3dLight_SpotlightConstant@b5', 'p3dLight_SpotlightTexture@s1[S]']
+0xe3e880   ps    484    2 'Microsoft (R) HLSL Shade'/ps_3_0  NEW
+           consts: NONE
+0xe3ea68   ps   2148   43 'Microsoft (R) HLSL Shade'/ps_3_0  NEW
+           consts: ['p3dViewMatrix@b0', 'predicate@b3']
+0xe3f2d0   ps   1416   19 'Microsoft (R) HLSL Shade'/ps_3_0  NEW
+           consts: ['p3dParticle_debugParam1@b0', 'p3dParticle_debugParam2@b1', 'p3dParticle_debugParam3@b2']
+0xe3f858   ps   3476   83 'Microsoft (R) HLSL Shade'/ps_3_0  COMMITTED dll_shadowblur_fp_e3f858.sm30
+           consts: ['$depthBuffer@s1[S]', '$depthThresh@b2', '$intexture@s0[S]', '$tapOffset4@b0', '$tapOffset5@b1']
+0xe405f0   ps   3632   63 'Microsoft (R) HLSL Shade'/ps_3_0  COMMITTED dll_shadowdebug_fp_e405f0.sm30
+           consts: ['colourChannel0@b10', 'colourChannel1@b11', 'colourChannel2@b12', 'colourChannel3@b13', 'colourChannel4@b14', 'p3dShadowEnabled@c0', 'p3dShadowEnabledChildren@b0', 'p3dShadowIsLinearDepth@c1', 'p3dShadowMap@s0[S]', 'p3dShadowMapChildBox00@b2', 'p3dShadowMapChildBox01@b3', 'p3dShadowMapChildBox03@b4', 'p3dShadowMapChildInfo00@b5', 'p3dShadowMapChildInfo01@b6', 'p3dShadowMapChildInfo02@b7', 'p3dShadowMapChildInfo03@b8', 'p3dShadowMapChildInfo04@b9', 'p3dShadowMapInfo@b1']
+0xe41420   ps    588    3 'Microsoft (R) HLSL Shade'/ps_3_0  NEW
+           consts: NONE
+0xe41670   ps    612    5 'Microsoft (R) HLSL Shade'/ps_3_0  COMMITTED dll_unlit_fp_e41670.sm30
+           consts: ['diffuseMap@s0[S]']
+0xe418d8   ps    568    3 'Microsoft (R) HLSL Shade'/ps_3_0  NEW
+           consts: NONE
+0xe41b10   ps    476    2 'Microsoft (R) HLSL Shade'/ps_3_0  NEW
+           consts: NONE
+0xe41cf0   ps   1340   24 'Microsoft (R) HLSL Shade'/ps_3_0  COMMITTED dll_pointsprite_fp_e41cf0.sm30
+           consts: ['diffuseMap@s0[S]']
+0xe42230   vs   1116   17 'Microsoft (R) HLSL Shade'/vs_3_0  NEW
+           consts: ['p3dWorldViewMatrix@b4', 'p3dWorldViewProjectionMatrix@b0']
+0xe42690   ps   1228   22 'Microsoft (R) HLSL Shade'/ps_3_0  NEW
+           consts: ['p3dWorldViewMatrix@b0']
+0xe42b60   vs    660    6 'Microsoft (R) HLSL Shade'/vs_3_0  NEW
+           consts: ['p3dWorldViewProjectionMatrix@b0']
+0xe42df8   ps    456    2 'Microsoft (R) HLSL Shade'/ps_3_0  NEW
+           consts: NONE
+0xe42fc0   vs    812    9 'Microsoft (R) HLSL Shade'/vs_3_0  NEW
+           consts: ['p3dWorldViewProjectionMatrix@b0']
+0xe432f0   ps   3504   61 'Microsoft (R) HLSL Shade'/ps_3_0  NEW
+           consts: ['p3dLight_Attenuation@b7', 'p3dLight_Colour@b9', 'p3dLight_DecayConstant@b8', 'p3dProjectionMatrixInverse@b0', 'p3dViewMatrix@b3', 'tfGBufferNormalMap@s0[S]', 'tfLight_PosViewSpace@b6', 'tfTanHalfFOV@b10', 'tfTexelCenterOffset@b11', 'tfZBufferMap@s1[S]']
+0xe440a0   vs    808    9 'Microsoft (R) HLSL Shade'/vs_3_0  NEW
+           consts: ['p3dWorldViewProjectionMatrix@b0']
+0xe443c8   ps   3704   62 'Microsoft (R) HLSL Shade'/ps_3_0  NEW
+           consts: ['p3dLight_Attenuation@b6', 'p3dLight_Colour@b9', 'p3dLight_DecayConstant@b8', 'p3dLight_SpotlightConstant@b7', 'p3dProjectionMatrixInverse@b3', 'p3dViewMatrix@b0', 'tfGBufferNormalMap@s0[S]', 'tfLight_DirViewSpace@b11', 'tfLight_PosViewSpace@b10', 'tfTanHalfFOV@b12', 'tfTexelCenterOffset@b13', 'tfZBufferMap@s1[S]']

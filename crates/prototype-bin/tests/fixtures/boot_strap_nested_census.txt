@@ -1,0 +1,700 @@
+# boot_strap.p3d nested container census (block 100 RE)
+# source: /home/z/my-project/source/boot_strap.p3d (3969452 B)
+# top-level 0xfe000000 containers: 281
+# ALL 281 containers contain ASCII names (scene-graph inventory)
+# distinct names (raw incl float-coincidence): 30702
+# KEY FINDING: the containers embed the game's AUDIO DEFINITION SYSTEM:
+#   70x 'AudioFile' + 70x 'RADP'/'radp' audio descriptors (44100 Hz sample
+#   rate observed), parameter schema names (Float32 x1027, String List x228,
+#   Bool x99, String x164), audio params (bus_name/min_pitch/max_pitch/
+#   min_vol/max_vol/fade_in_ms/fade_out_ms/min_delay_ms/max_delay_ms/
+#   clip_vol/volume/spread/loop/group/dialog), bus names (master/fe_hud/
+#   generic_mono_lr).  fe_hud = the FRONTEND HUD audio group.
+# record-start triplet walk: only 2073/990779 4-aligned scans fit
+#   [u32 type][uid?][name] -> nested records have TYPE-DEPENDENT bodies;
+#   full per-type schemas remain future work.
+# names below: top 400 identifiers (>=4 letters) by frequency
+# columns (per container): index uid payload_bytes ascii_name_count
+# --- per container ---
+   0 0x00009cb3    40103     5
+   1 0x0000a36b    41823   493
+   2 0x0000f4df    62675   455
+   3 0x0000547d    21617    46
+   4 0x00004fbd    20401   161
+   5 0x0000e2e5    58073   616
+   6 0x0000d77d    55153   162
+   7 0x00010163    65879  1402
+   8 0x00013db3    81319  1838
+   9 0x0000d3af    54179  1148
+  10 0x0000f277    62059  1323
+  11 0x00060b23   396055  5668
+  12 0x00060b23   396055  5407
+  13 0x000075e1    30165     8
+  14 0x00007629    30237   463
+  15 0x0000cdaf    52643    20
+  16 0x0000049f     1171    10
+  17 0x00003e01    15861   276
+  18 0x00000795     1929     5
+  19 0x0000060b     1535     5
+  20 0x000002eb      735    16
+  21 0x000005c9     1469     6
+  22 0x0000f1f7    61931     8
+  23 0x000003cf      963     6
+  24 0x0000055f     1363     7
+  25 0x00000433     1063     6
+  26 0x000005ff     1523     8
+  27 0x00007d7f    32115   172
+  28 0x00007639    30253   744
+  29 0x00049067   299099  2786
+  30 0x00003fb1    16293    13
+  31 0x000041d5    16841    39
+  32 0x000019af     6563     5
+  33 0x00001eb1     7845   138
+  34 0x0001678f    92035  1922
+  35 0x00000993     2439     5
+  36 0x000006c9     1725     7
+  37 0x0000054f     1347     8
+  38 0x00007c4f    31811   341
+  39 0x00008e47    36411    12
+  40 0x00017113    94471   284
+  41 0x0003e465   255065   901
+  42 0x00000e07     3579     5
+  43 0x00028f2f   167715   923
+  44 0x000015e9     5597   182
+  45 0x00008d8b    36223    96
+  46 0x00017963    96599  3115
+  47 0x000095e5    38361   350
+  48 0x000091fd    37361   316
+  49 0x00009059    36941   419
+  50 0x00009215    37385  1044
+  51 0x00030501   197877  2142
+  52 0x00002f37    12075     5
+  53 0x0000327d    12913     5
+  54 0x00002a77    10859    29
+  55 0x00002f29    12061    46
+  56 0x000029fd    10737     7
+  57 0x00002db3    11687    21
+  58 0x00000ee7     3803     9
+  59 0x0000d2f1    53989   430
+  60 0x0000fc2b    64543   163
+  61 0x0000205d     8273   142
+  62 0x00000e81     3701     5
+  63 0x00000ca7     3227     5
+  64 0x0001b7e1   112597   992
+  65 0x00001f35     7977   157
+  66 0x00001a85     6777   156
+  67 0x000020d9     8397   212
+  68 0x00029f07   171771   832
+  69 0x0002b651   177733   585
+  70 0x000002dc      720    16
+  71 0x00000178      364     8
+  72 0x000003e7      987    36
+  73 0x0000086f     2147    86
+  74 0x000000ac      160     6
+  75 0x0000005d       81     2
+  76 0x00000062       86     2
+  77 0x00000169      349     7
+  78 0x00000338      812    19
+  79 0x00000386      890    19
+  80 0x0000005d       81     1
+  81 0x000003ca      958    20
+  82 0x000003c9      957    20
+  83 0x00000496     1162    25
+  84 0x00000496     1162    25
+  85 0x000004b7     1195    26
+  86 0x0000027b      623    15
+  87 0x0000048f     1155    25
+  88 0x00000380      884    19
+  89 0x00000427     1051    25
+  90 0x0000006b       95     2
+  91 0x000000d0      196     5
+  92 0x000003d8      972    23
+  93 0x00000472     1126    26
+  94 0x000004b2     1190    26
+  95 0x00000083      119     3
+  96 0x0000005e       82     1
+  97 0x000004b3     1191    26
+  98 0x00000466     1114    24
+  99 0x00000466     1114    24
+ 100 0x0000022b      543    12
+ 101 0x000001dd      465    11
+ 102 0x0000022d      545    12
+ 103 0x0000029c      656    14
+ 104 0x0000048d     1153    25
+ 105 0x00000464     1112    24
+ 106 0x00000495     1161    25
+ 107 0x00000491     1157    25
+ 108 0x00000311      773    18
+ 109 0x0000005f       83     2
+ 110 0x0000046d     1121    25
+ 111 0x00000491     1157    25
+ 112 0x000000f9      237     6
+ 113 0x0000005b       79     2
+ 114 0x000003e2      982    24
+ 115 0x00000422     1046    24
+ 116 0x000000d5      201     5
+ 117 0x000002c7      699    17
+ 118 0x00000255      585    12
+ 119 0x0000005c       80     2
+ 120 0x000003a7      923    20
+ 121 0x00000381      885    19
+ 122 0x000003a5      921    21
+ 123 0x0000022f      547    12
+ 124 0x000002a3      663    16
+ 125 0x000000a6      154     3
+ 126 0x000000a9      157     3
+ 127 0x000004b7     1195    26
+ 128 0x0000005b       79     2
+ 129 0x0000023e      562    19
+ 130 0x0000024a      574    23
+ 131 0x00000161      341    16
+ 132 0x00000246      570    23
+ 133 0x00000315      777    31
+ 134 0x00000314      776    31
+ 135 0x00000316      778    31
+ 136 0x00000307      763    35
+ 137 0x0000024d      577    23
+ 138 0x0000015e      338    17
+ 139 0x00000100      244    11
+ 140 0x000000ef      227    10
+ 141 0x00000176      362    18
+ 142 0x000000f4      232    10
+ 143 0x000000f3      231    10
+ 144 0x000003e3      983    38
+ 145 0x0000036c      864    38
+ 146 0x00000329      797    34
+ 147 0x00000281      629    22
+ 148 0x00000100      244    12
+ 149 0x00000100      244    12
+ 150 0x00000100      244    12
+ 151 0x00000100      244    12
+ 152 0x00000100      244    12
+ 153 0x00000100      244    12
+ 154 0x00000100      244    12
+ 155 0x00000100      244    12
+ 156 0x00000100      244    12
+ 157 0x00000100      244    12
+ 158 0x00000100      244    12
+ 159 0x00000100      244    12
+ 160 0x00000244      568    23
+ 161 0x00000162      342    16
+ 162 0x00000164      344    16
+ 163 0x00000103      247    12
+ 164 0x00000103      247    12
+ 165 0x00000103      247    12
+ 166 0x00000103      247    12
+ 167 0x00000103      247    12
+ 168 0x00000103      247    12
+ 169 0x00000103      247    12
+ 170 0x00000103      247    12
+ 171 0x0000032d      801    35
+ 172 0x00000102      246    12
+ 173 0x00000100      244    12
+ 174 0x00000100      244    12
+ 175 0x000000fc      240    12
+ 176 0x000000fe      242    12
+ 177 0x000000fe      242    12
+ 178 0x000000fe      242    12
+ 179 0x00000100      244    12
+ 180 0x00000100      244    12
+ 181 0x00000100      244    12
+ 182 0x000000fc      240    12
+ 183 0x000000fc      240    12
+ 184 0x000000fc      240    12
+ 185 0x000000fc      240    12
+ 186 0x000000fc      240    12
+ 187 0x000000fc      240    12
+ 188 0x000000fc      240    12
+ 189 0x000000fc      240    12
+ 190 0x000000fc      240    12
+ 191 0x000000fe      242    12
+ 192 0x000000fc      240    12
+ 193 0x000000fe      242    12
+ 194 0x000000fc      240    12
+ 195 0x000000fe      242    12
+ 196 0x000000fe      242    12
+ 197 0x000000fc      240    12
+ 198 0x00000325      793    36
+ 199 0x00000249      573    23
+ 200 0x00000218      524    21
+ 201 0x0000015c      336    16
+ 202 0x00000693     1671    65
+ 203 0x0000068e     1666    65
+ 204 0x0000068d     1665    65
+ 205 0x0000068d     1665    65
+ 206 0x00000253      583    23
+ 207 0x0000024e      578    23
+ 208 0x00000327      795    34
+ 209 0x0000031b      783    34
+ 210 0x0000031b      783    34
+ 211 0x00000320      788    34
+ 212 0x0000031d      785    34
+ 213 0x00000317      779    34
+ 214 0x0000031d      785    34
+ 215 0x0000031d      785    34
+ 216 0x00000327      795    35
+ 217 0x00000325      793    35
+ 218 0x00000317      779    34
+ 219 0x00000312      774    33
+ 220 0x0000039d      913    37
+ 221 0x0000031d      785    34
+ 222 0x0000031f      787    34
+ 223 0x0000031b      783    34
+ 224 0x0000031a      782    33
+ 225 0x0000031b      783    34
+ 226 0x00000323      791    34
+ 227 0x00000325      793    34
+ 228 0x00000327      795    34
+ 229 0x0000031a      782    34
+ 230 0x00000321      789    34
+ 231 0x00000327      795    34
+ 232 0x00000329      797    34
+ 233 0x00000210      516    22
+ 234 0x00000319      781    34
+ 235 0x0000032d      801    34
+ 236 0x0000032b      799    34
+ 237 0x0000032e      802    34
+ 238 0x0000032b      799    34
+ 239 0x0000032b      799    34
+ 240 0x000001b5      425    17
+ 241 0x00000324      792    34
+ 242 0x00000324      792    34
+ 243 0x00000324      792    34
+ 244 0x00000332      806    34
+ 245 0x00000331      805    34
+ 246 0x00000331      805    34
+ 247 0x00000322      790    34
+ 248 0x00000322      790    34
+ 249 0x00000322      790    34
+ 250 0x0000032c      800    34
+ 251 0x0000031d      785    34
+ 252 0x00000325      793    34
+ 253 0x0000031e      786    34
+ 254 0x00000321      789    34
+ 255 0x00000323      791    34
+ 256 0x00000350      836    36
+ 257 0x00000328      796    34
+ 258 0x0000033d      817    35
+ 259 0x0000033c      816    35
+ 260 0x0000033a      814    35
+ 261 0x00000336      810    34
+ 262 0x00000338      812    34
+ 263 0x0000032e      802    34
+ 264 0x00000320      788    34
+ 265 0x00000323      791    34
+ 266 0x00000323      791    34
+ 267 0x00000323      791    34
+ 268 0x00000327      795    34
+ 269 0x00000332      806    34
+ 270 0x000001b2      422    17
+ 271 0x000001ab      415    17
+ 272 0x00000328      796    34
+ 273 0x00000326      794    34
+ 274 0x00000323      791    34
+ 275 0x00000324      792    34
+ 276 0x0000032a      798    34
+ 277 0x00000356      842    38
+ 278 0x00000344      824    34
+ 279 0x00000314      776    34
+ 280 0x00000314      776    34
+# --- top identifiers (count name) ---
+ 1027 Float32
+  228 String List
+  164 String
+  152 Patch
+  149 master
+   99 Bool
+   99 group
+   90 loop
+   88 bus_name
+   82 spread
+   82 files
+   78 fe_hud
+   78 max_pitch
+   78 min_pitch
+   76 dialog
+   74 min_vol
+   74 fade_in_ms
+   74 max_vol
+   74 fade_out_ms
+   74 min_delay_ms
+   74 max_delay_ms
+   73 clip_vol
+   70 AudioFile
+   70 radp
+   70 RADP
+   66 volume
+   62 generic_mono_lr
+   48 filename
+   46 NIS_Player
+   46 mixbuss
+   42 3d_dial
+   40 3d_rad
+   40 vehic
+   40 generic
+   38 2d_rad
+   38 physic
+   38 infect
+   37 guns
+   37 heli
+   37 enemies
+   37 a_fol
+   36 a_sfx
+   35 alex
+   35 igmusic
+   32 explode
+   31 alert
+   29 bossfx
+   26 Vector
+   25 2d_dial
+   25 m_radio
+   25 brief
+   25 a_mono
+   23 a_radio
+   20 femusic
+   20 whisp
+   17 file
+   14 Dialogue
+   11 ui_fe_ht_nav
+   11 reverb_send
+   11 generic_stereo
+   10 music
+    8 ui_fe_map_zoom
+    8 alex_feet_metal_grating
+    7 CDCC
+    7 Positional_Dialogue
+    6 CCCC
+    6 CC3CC2
+    6 ui_fe_ht_slider
+    6 MusicMGraphCell
+    6 alex_feet_metal_thick
+    5 DDCC
+    5 ui_fe_ht_back
+    5 ui_fe_main_back
+    5 ui_fe_prompt_02
+    5 ui_hud_switch6
+    5 Dialogue/Ambient
+    5 doppler
+    5 radverb_generic
+    4 big_heavy_whoosh_01
+    4 C2C3CC
+    4 ASDC
+    4 collectible004_sfx
+    4 collectible_03
+    4 TTCC
+    4 C2C3C3C3
+    4 C2C3CC2
+    4 C3CC3CC2
+    4 C3CC34C3
+    4 CCC3C
+    4 CCCC3
+    4 selection
+    4 ui_fe_ht_select
+    4 ui_fe_ht_tab
+    4 ui_fe_ht_wipe
+    4 ui_fe_main_nav
+    4 ui_fe_main_select
+    4 ui_fe_map_zoom_out
+    4 ui_fe_pps_drain_end
+    4 ui_fe_pps_drain_loop
+    4 ui_fe_ring_rotate
+    4 ui_fe_ss_shuffle_end
+    4 ui_fe_ss_shuffle_loop
+    4 ui_fe_woi_nav
+    4 ui_fe_woi_node_tendrils
+    4 ui_hud_adrenaline_boost
+    4 ui_hud_critical_mass_full
+    4 ui_hud_event_in_range01_07
+    4 ui_hud_minimap_clear
+    4 ui_hud_minimap_enter_alert
+    4 ui_hud_minimap_iris_close
+    4 ui_hud_minimap_iris_open
+    4 ui_hud_minimap_red_to_radar
+    4 ui_hud_minimap_yellow_to_red
+    4 ui_hud_outofammo
+    4 ui_hud_power_deselect
+    4 ui_hud_rubber_stamp
+    4 ui_hud_target_lock
+    4 ui_hud_target_release
+    4 walkie_squelch02
+    4 walkie_squelch07
+    4 walkie_squelch08
+    4 one_shot_low
+    4 Dialogue/Combat
+    4 alex_feet_dirt
+    4 alex_feet_wood
+    4 alex_feet_wood_hollow
+    4 default
+    4 Radio_Dialogue
+    4 lr_volume
+    4 3D_Clip_Player
+    4 Simple_Mono_Player
+    4 reverb_time
+    4 room_size
+    4 early_gain
+    4 late_gain
+    4 early_lpf
+    4 late_lpf
+    4 damping_lpf
+    4 predelay
+    4 diffusion
+    4 flutter
+    4 dist_wall
+    4 wall_reflect
+    4 input_lpf
+    4 4cHfW
+    4 center_send
+    4 center_return
+    4 back_send
+    4 back_return
+    4 automate
+    4 dist_wall_min
+    4 early_lpf_max
+    4 time_max
+    4 horiz_min
+    4 horiz_max
+    4 vert_min
+    4 vert_max
+    4 overall_min
+    4 overall_max
+    3 blob_collect_01
+    3 brawler_grunt_13
+    3 collectible_01
+    3 CSCC
+    3 CECC
+    3 infected1_roar_01
+    3 CDDC
+    3 infected1_roar_04
+    3 SSCC
+    3 SDDC
+    3 infected1_roar_13
+    3 infected1_roar_15
+    3 CTCC
+    3 loading_pulse01
+    3 C3C3C3S
+    3 C3C34C3C
+    3 C3C3C3C3
+    3 C3CCC
+    3 CC34CC2
+    3 3CC3CC2
+    3 C3CC3C
+    3 loading_pulse02
+    3 C34CC3C3
+    3 C3C343C3C
+    3 CC3CC
+    3 C3CC2C
+    3 pink_noise
+    3 select
+    3 ui_fe_ht_locked_13
+    3 ui_fe_loading_hint_one_shot01
+    3 ui_fe_loading_hint_one_shot02
+    3 ui_fe_loading_hint_one_shot03
+    3 ui_fe_loading_hint_one_shot04
+    3 2EDCC
+    3 ui_hud_bloodtox_breathing_loop
+    3 ui_hud_button_hint_pulse_02
+    3 ui_hud_hint_pulse18
+    3 ui_hud_infected_vision_loop
+    3 C2CCC
+    3 ui_hud_lowhealth01
+    3 ui_hud_lowhealth02
+    3 wwwG
+    3 ui_hud_lowhealth03
+    3 rTDS2
+    3 ui_hud_power_nav_05
+    3 ui_hud_power_select_04
+    3 ui_hud_thermal_vision_loop
+    3 woi_whoosh_in
+    3 woi_whoosh_out
+    3 event_start
+    3 event_end
+    3 one_shot_med
+    3 Dialogue/Gameplay
+    3 lrlevel
+    3 centre_level
+    2 air_brake
+    2 DECC
+    2 CBCC
+    2 CECCC
+    2 TDDC
+    2 BEDB
+    2 BDCC3
+    2 CD4DC
+    2 DDC4C
+    2 DSCC
+    2 C34CCC
+    2 ATCC
+    2 SDDS
+    2 SDSC
+    2 DDCC3
+    2 ECCC3
+    2 BcCC3
+    2 SSSC
+    2 BDCC
+    2 DCDCC
+    2 DCDC
+    2 VECC
+    2 AUDC
+    2 BCC3C
+    2 SSC4C
+    2 TDSC3
+    2 C34CC24C
+    2 C34CC34C
+    2 C3CC34C
+    2 CC344C34CC3CC3CC
+    2 C34C2C3S
+    2 34CC3CC
+    2 C34CC34CC3
+    2 C3CC3C3
+    2 C3CCB
+    2 CCCC344
+    2 4C34C3S2C
+    2 CCC34C
+    2 C34CC34C3
+    2 C34CC3CC3
+    2 C3C343C3C33
+    2 C344CC34C
+    2 C3CC3S
+    2 C34CC3C
+    2 34SCCS
+    2 C34C34C3C
+    2 C2C3C3C33
+    2 34C34C3C3C3
+    2 CC3S3C
+    2 C3CC3CC
+    2 CCSC
+    2 34C34CC3C
+    2 C3CC2C2
+    2 C34CC3S2
+    2 C3C34CB
+    2 4CCCC
+    2 34C34C3S2C2
+    2 C23C3C3C
+    2 4B2C3CC2
+    2 3C3CCB
+    2 C3C34CC2C
+    2 C3C34CC
+    2 C2C3C3C3CC
+    2 335CCCS344
+    2 CC34CCC34
+    2 C3C34C3S
+    2 C2C2C2C23
+    2 CCC34CCC2
+    2 C3CCB2C3
+    2 34C3CC2C2
+    2 C34S2C34C
+    2 C34CC3CC
+    2 3CC3C3S2C3
+    2 C34CCC2
+    2 CCB2C3
+    2 CCCC3444C3
+    2 CC34C3C
+    2 C3C3CC2
+    2 C3CC3C34C2
+    2 3CCCC
+    2 CCCCCC3
+    2 C35CCC3
+    2 3CC34CC3
+    2 C3S3C34C343
+    2 S2CCC3
+    2 C3CC3D
+    2 C2CC34C
+    2 C2C23C3C
+    2 2C3CC3C
+    2 3CC3CC
+    2 C2C3C24C
+    2 CCBC
+    2 CCCC2
+    2  SD4DCC3C
+    2 BDDC
+    2 1DDC4C
+    2 CCCC3CC23C
+    2 cSSCC
+    2 2EDSC
+    2 DCSC3
+    2 AEEC3
+    2 DTDC
+    2 bDCC
+    2 CCCC4CC
+    2 sCSC3
+    2 2EDDC
+    2 pwww
+    2 wwww
+    2 BSCC
+    2 CCC3C3
+    2 BS4DC
+    2 CESCCC
+    2 UDS3C
+    2 EECC
+    2 1DESC3
+    2 CDDCC34
+    2 dFDC
+    2 main
+    2 front_end
+    2 scripted_sequence
+    2 one_shot_high
+    2 Dialogue/Mission
+    2 MaterialMap
+    2 Dirt
+    2 Wood
+    2 SolidMetal
+    2 Leaves
+    2 alex_feet_leaves
+    2 Wood_Solid
+    2 Brick
+    2 alex_feet_brick
+    2 prototype_boxes
+    2 Grass
+    2 Metal_Grating
+    2 Water
+    2 alex_feet_water
+    2 Metal_Tubing
+    2 MetalRailing
+    2 Wood_Hollow
+    2 alex_feet
+    2 Wood_Creaky
+    2 alex_feet_wood_creaky
+    2 HollowMetal
+    2 Metal_Thick
+    2 prototype_cars
+    2 alex_feet_car
+    2 Metal_Thin
+    2 alex_armour_feet
+    2 TestTones
+    2 credits
+    2 pause_menu_music
+    2 AtCamera_Player_Mono
+    1 0RGE3CC3.
+    1 8cS555343C21S4
+    1 42GCCC+
+    1 S43CBS2
+    1 nOBS
+    1 cDBB
+    1 4c3CC22CD5
+    1 GT3DS3
+    1 DD24ST3
+    1 45C2SCCC
+    1 DS4C24D3224
+    1 3F4DB243C2
+    1 3SC2CC
+    1 2E4CCcS32B354
+    1 eC2RD3
+    1 174ETC34D4DC-
+    1 c3cTC2C
+    1 BED443D2435D
+    1 1C3EcDC2
+    1 AEC3C
+    1 tD3C3S3
+    1 VDSCC32
+    1 CDS34C
+    1 3CCBD32
+    1 1WDSC2
+    1 B4DCCC34
+    1 C3DD24C
+    1 CC22CCC
+    1 3CS3CC3
+    1 2S3DSCC
+    1 C33C4C44CC23C33
+    1 4cDSC
+    1 34DCSC3
+    1 C2S4CC32

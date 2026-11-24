@@ -1,0 +1,11 @@
+# scripts.rcf member index (block 99 RE)
+# source: /home/z/my-project/source/scripts.rcf (186638 B)
+# dir_offset=60 dir_size=84 entry_count=7
+# columns: index name_hash(hex) file_offset file_size content_type
+   0 0x0ffd75fa     184320     2318 compiled Lua (LJ bytecode)
+   1 0x316d751d     126976    39686 text (credits/license)
+   2 0x34e40dc3     167936     4383 compiled Lua (LJ bytecode)
+   3 0x437f3629      86016    39687 text (credits/license)
+   4 0xa99c4c55      45056    39686 text (credits/license)
+   5 0xce310c99       4096    39686 text (credits/license)
+   6 0xd1815f8c     174080     8683 P3D (version 12)

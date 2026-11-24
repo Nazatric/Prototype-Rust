@@ -1,0 +1,57 @@
+# DLL SM3.0 blob ROLE cross-reference (block 101)
+# Sources joined:
+#   PROGRAM_LIBRARY  crates/prototype-render/src/shader/library.rs (45 rows, block 33-98 RE)
+#   dll_sm30_catalog.txt (block 98 CTAB walk over prototypeenginef.dll)
+#   render wiring: render_art_world_cpu.rs / shader::world (the committed render path)
+# Role column: 'wired:' = consumed by committed render code today;
+#   'inferred:<subsystem>' = classified from program name + CTAB signature
+#   features (documented heuristic, NOT loader-code proof).
+#
+# rows: 45   catalog blobs matched: 45
+#
+name | stage | blob_offset | slot_va | variant | ins | key constants (<=4) | role
+bink | Vs | 0xe34b08 | 0x110bb984 | 1 | 9 | p3dWorldViewProjectionMatrix@b0 | inferred:video (PS carries the Bink YUV decode planes)
+default | Vs | 0xe34e60 | 0x110bb998 | 6 | 57 | p3dEyePositionObjectSpace@b16; p3dLight_PositionObjectSpace@b17; p3dLight_ProjectedTextureMatrix@b8; p3dShadowMapMatrix@b12; ... | wired:world-geometry (render_art_world_cpu + shader::world + GPU harness)
+depth | Vs | 0xe358e8 | 0x110bb9f8 | 1 | 12 | p3dWorldViewProjectionMatrix@b0 | inferred:depth write
+depthrestore | Vs | 0xe35c80 | 0x110bba08 | 1 | 12 | p3dWorldViewProjectionMatrix@b0 | inferred:depth restore
+error | Vs | 0xe36010 | 0x110bba18 | 1 | 6 | p3dWorldViewProjectionMatrix@b0 | inferred:error fallback
+fastclear | Vs | 0xe36278 | 0x110bba28 | 1 | 9 | p3dWorldViewProjectionMatrix@b0 | inferred:fast clear
+framebuffrestore | Vs | 0xe36580 | 0x110bba38 | 1 | 12 | p3dWorldViewProjectionMatrix@b0 | inferred:framebuffer restore
+legacy | Vs | 0xe36918 | 0x110bba48 | 5 | 48 | p3dEyePositionObjectSpace@b12; p3dLight_PositionObjectSpace@b13; p3dLight_ProjectedTextureMatrix@b8; p3dWorldMatrix@b4; ... | inferred:legacy world path
+lightcount | Vs | 0xe37238 | 0x110bba98 | 5 | 26 | lightCountColor@b12; p3dWorldViewMatrix@b0; p3dWorldViewMatrixInverseTranspose@b4; p3dWorldViewProjectionMatrix@b8; ... | inferred:light count debug
+orthonormalbasis | Vs | 0xe37858 | 0x110bbae8 | 3 | 33 | p3dWorldMatrix@b8; p3dWorldViewMatrix@b0; p3dWorldViewProjectionMatrix@b4 | inferred:OBN lighting basis
+particledebug | Vs | 0xe37e70 | 0x110bbb18 | 1 | 15 | p3dWorldViewProjectionMatrix@b0 | inferred:particle debug
+shadowblur | Vs | 0xe38258 | 0x110bbb28 | 2 | 21 | $tapOffsets@b4; p3dWorldViewProjectionMatrix@b0 | inferred:shadow blur
+shadowdepthfloat | Vs | 0xe393f8 | 0x110bbbb8 | 1 | 9 | p3dWorldViewProjectionMatrix@b0 | inferred:shadow depth write (float Z)
+shadowdebug | Vs | 0xe38790 | 0x110bbb48 | 7 | 69 | p3dEyePositionObjectSpace@b20; p3dLight_PositionObjectSpace@b21; p3dLight_ProjectedTextureMatrix@b12; p3dShadowMapMatrix@b16; ... | inferred:shadow debug view
+unlit | Vs | 0xe39850 | 0x110bbbc8 | 1 | 12 | p3dWorldViewProjectionMatrix@b0 | inferred:unlit surface
+zfill | Vs | 0xe39bd8 | 0x110bbbd8 | 1 | 9 | p3dWorldViewProjectionMatrix@b0 | inferred:Z-prepass fill
+zfillnotex | Vs | 0xe3a018 | 0x110bbbe8 | 1 | 6 | p3dWorldViewProjectionMatrix@b0 | inferred:Z-prepass fill
+pointsprite | Vs | 0xe3a3a8 | 0x110bbbf8 | 1 | 36 | p3dWorldViewProjectionMatrix@b0 | inferred:point sprites (particles)
+flatcolour | Vs | 0xe3aa70 | 0x110bbc08 | 2 | 11 | flatcolour@b4; p3dWorldViewProjectionMatrix@b0 | inferred:error-fill (flat colour fallback)
+bink | Ps | 0xe3adf8 | 0x110bbc28 | 4 | 20 | a_tex@s3[S]; cb_tex@s2[S]; cr_tex@s1[S]; y_tex@s0[S] | inferred:video (PS carries the Bink YUV decode planes)
+default | Ps | 0xe3b308 | 0x110bbc68 | 30 | 133 | diffuseMap@s4[S]; materialDiffuse@b8; materialShininess@b7; materialSpecular@b9; ... | wired:world-geometry (render_art_world_cpu + shader::world + GPU harness)
+depth | Ps | 0xe3cdc8 | 0x110bbe48 | 1 | 8 | $p3dZScale@b0 | inferred:depth write
+depthrestore | Ps | 0xe3d088 | 0x110bbe58 | 2 | 8 | depthMap@s1[S]; diffuseMap@s0[S] | inferred:depth restore
+error | Ps | 0xe3d3d0 | 0 | 0 | 2 | (none) | inferred:error fallback
+fastclear | Ps | 0xe3d570 | 0 | 0 | 2 | (none) | inferred:fast clear
+framebuffrestore | Ps | 0xe3d730 | 0x110bbe78 | 1 | 5 | diffuseMap@s0[S] | inferred:framebuffer restore
+legacy | Ps | 0xe3d9b0 | 0x110bbe88 | 15 | 69 | diffuseMap@s3[S]; materialDiffuse@b8; materialShininess@b7; materialSpecular@b9; ... | inferred:legacy world path
+lightcount | Ps | 0xe3e880 | 0 | 0 | 2 | (none) | inferred:light count debug
+orthonormalbasis | Ps | 0xe3ea68 | 0x110bbf78 | 2 | 43 | p3dViewMatrix@b0; predicate@b3 | inferred:OBN lighting basis
+particledebug | Ps | 0xe3f2d0 | 0x110bbf98 | 3 | 19 | p3dParticle_debugParam1@b0; p3dParticle_debugParam2@b1; p3dParticle_debugParam3@b2 | inferred:particle debug
+shadowblur | Ps | 0xe3f858 | 0x110bbfc8 | 5 | 83 | $depthBuffer@s1[S]; $depthThresh@b2; $intexture@s0[S]; $tapOffset4@b0; ... | inferred:shadow blur
+shadowdepthfloat | Ps | 0xe41420 | 0 | 0 | 3 | (none) | inferred:shadow depth write (float Z)
+shadowdebug | Ps | 0xe405f0 | 0x110bc018 | 18 | 63 | colourChannel0@b10; colourChannel1@b11; colourChannel2@b12; colourChannel3@b13; ... | inferred:shadow debug view
+unlit | Ps | 0xe41670 | 0x110bc138 | 1 | 5 | diffuseMap@s0[S] | inferred:unlit surface
+zfill | Ps | 0xe418d8 | 0 | 0 | 3 | (none) | inferred:Z-prepass fill
+zfillnotex | Ps | 0xe41b10 | 0 | 0 | 2 | (none) | inferred:Z-prepass fill
+pointsprite | Ps | 0xe41cf0 | 0x110bc148 | 1 | 24 | diffuseMap@s0[S] | inferred:point sprites (particles)
+gbuffer | Vs | 0xe42230 | 0x110bc158 | 2 | 17 | p3dWorldViewMatrix@b4; p3dWorldViewProjectionMatrix@b0 | inferred:G-buffer write
+gbuffer | Ps | 0xe42690 | 0x110bc178 | 1 | 22 | p3dWorldViewMatrix@b0 | inferred:G-buffer write
+lightstencil | Vs | 0xe42b60 | 0x110bc188 | 1 | 6 | p3dWorldViewProjectionMatrix@b0 | inferred:light volume stencil
+lightstencil | Ps | 0xe42df8 | 0 | 0 | 2 | (none) | inferred:light volume stencil
+pointlight | Vs | 0xe42fc0 | 0x110bc198 | 1 | 9 | p3dWorldViewProjectionMatrix@b0 | inferred:point-light volume
+pointlight | Ps | 0xe432f0 | 0x110bc1a8 | 10 | 61 | p3dLight_Attenuation@b7; p3dLight_Colour@b9; p3dLight_DecayConstant@b8; p3dProjectionMatrixInverse@b0; ... | inferred:point-light volume
+spotlight | Vs | 0xe440a0 | 0x110bc248 | 1 | 9 | p3dWorldViewProjectionMatrix@b0 | inferred:spot-light volume
+spotlight | Ps | 0xe443c8 | 0x110bc258 | 12 | 62 | p3dLight_Attenuation@b6; p3dLight_Colour@b9; p3dLight_DecayConstant@b8; p3dLight_SpotlightConstant@b7; ... | inferred:spot-light volume

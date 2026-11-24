@@ -1,0 +1,44 @@
+[package]
+name = "prototype-render"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Prototype (2009) render-path reconstruction: scene graph, SM 3.0 bytecode decoder, HLSL to WGSL translator, pipeline descriptor."
+
+[lib]
+name = "prototype_render"
+path = "src/lib.rs"
+
+[dependencies]
+prototype-common = { workspace = true }
+prototype-p3d    = { workspace = true }
+prototype-math   = { workspace = true }
+
+# Real wgpu render loop — feature-gated so default builds (and every
+# sandboxed `cargo test`) never compile it; `cargo check --features
+# render-wgpu` is the compile gate (no GPU needed to check).
+wgpu             = { workspace = true, optional = true }
+
+[dev-dependencies]
+prototype-rcf    = { workspace = true }
+# Block 76: the zero-dependency deterministic PNG encoder (block 75)
+# is the evidence path for both the CPU mirror and the GPU harness —
+# the harness readback → PNG, and the CPU mirror → PNG.
+prototype-video  = { workspace = true }
+# The offscreen device test (video_quad) blocks on wgpu futures; pollster
+# is the same blocking helper the android app uses.
+pollster         = "0.4"
+# The exact WGSL front-end + validator wgpu embeds (naga 25).  Dev-only:
+# tests/naga_wgsl_validate.rs runs `parse_str` + `Validator::validate` on
+# EVERY translated shader text — a real compile check with no GPU (naga's
+# parse+validate is pure CPU).  This closes the long-standing "output
+# WGSL is NOT verified to compile" honest-limit: the sandbox can now
+# catch naga errors before the first on-device run.
+naga             = { workspace = true }
+
+[features]
+default = []
+render-wgpu = ["dep:wgpu"]

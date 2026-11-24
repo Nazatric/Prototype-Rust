@@ -1,0 +1,43 @@
+# frontendshaders.p3d chunk census (block 99 RE)
+# source: /home/z/my-project/download/prototype-rs/crates/prototype-bin/tests/fixtures/frontendshaders.p3d (81110 B)
+# P3D version=12 file_size=81110 walked_chunks=36
+# chunk type histogram:
+#   0x00011009 (69641): 12 chunks
+#   0x0001100b (69643): 24 chunks
+# columns: index type_id(hex) uid offset total_size shader_name
+    0 0x0001100b 0x00000041         12       2785 'CxformGauraud - lit - Fragment Program'
+    1 0x0001100b 0x0000003d       2797       2697 'CxformGauraud - lit - Vertex Program'
+    2 0x0001100b 0x00000049       5494       3538 'CxformGauraudMultiply - lit - Fragment Program'
+    3 0x0001100b 0x00000045       9032       2705 'CxformGauraudMultiply - lit - Vertex Program'
+    4 0x0001100b 0x00000051      11737       2801 'CxformGauraudMultiplyNoAddAlpha - lit - Fragment Program'
+    5 0x0001100b 0x00000051      14538       2461 'CxformGauraudMultiplyNoAddAlpha - lit - Vertex Program'
+    6 0x0001100b 0x00000051      16999       4626 'CxformGauraudMultiplyTexture - lit - Fragment Program'
+    7 0x0001100b 0x0000004d      21625       3835 'CxformGauraudMultiplyTexture - lit - Vertex Program'
+    8 0x0001100b 0x00000049      25460       2360 'CxformGauraudNoAddAlpha - lit - Fragment Program'
+    9 0x0001100b 0x00000049      27820       2453 'CxformGauraudNoAddAlpha - lit - Vertex Program'
+   10 0x0001100b 0x00000049      30273       3590 'CxformGauraudTexture - lit - Fragment Program'
+   11 0x0001100b 0x00000045      33863       3827 'CxformGauraudTexture - lit - Vertex Program'
+   12 0x0001100b 0x00000045      37690       1586 'cxformsolidcolour - lit - Fragment Program'
+   13 0x0001100b 0x00000041      39276       2194 'cxformsolidcolour - lit - Vertex Program'
+   14 0x0001100b 0x00000041      41470       2546 'cxformtexture - lit - Fragment Program'
+   15 0x0001100b 0x0000003d      44016       3312 'cxformtexture - lit - Vertex Program'
+   16 0x0001100b 0x00000049      47328       3585 'CxformTextureMultiply - lit - Fragment Program'
+   17 0x0001100b 0x00000045      50913       3320 'CxformTextureMultiply - lit - Vertex Program'
+   18 0x0001100b 0x00000041      54233       3289 'gfxtextshader - lit - Fragment Program'
+   19 0x0001100b 0x0000003d      57522       2680 'gfxtextshader - lit - Vertex Program'
+   20 0x0001100b 0x00000041      60202       3338 'hud_2dmarker - lit - Fragment Program'
+   21 0x0001100b 0x0000003d      63540       2680 'hud_2dmarker - lit - Vertex Program'
+   22 0x0001100b 0x00000045      66220       2996 'hud_minimapmarker - lit - Fragment Program'
+   23 0x0001100b 0x00000041      69216       2684 'hud_minimapmarker - lit - Vertex Program'
+   24 0x00011009 0x00000059      71900        588 'CxformGauraud'
+   25 0x00011009 0x00000061      72488        657 'CxformGauraudMultiply'
+   26 0x00011009 0x00000069      73145        657 'CxformGauraudMultiplyNoAddAlpha'
+   27 0x00011009 0x00000065      73802        947 'CxformGauraudMultiplyTexture'
+   28 0x00011009 0x00000061      74749        588 'CxformGauraudNoAddAlpha'
+   29 0x00011009 0x0000005d      75337        893 'CxformGauraudTexture'
+   30 0x00011009 0x0000005d      76230        575 'cxformsolidcolour'
+   31 0x00011009 0x00000059      76805        929 'cxformtexture'
+   32 0x00011009 0x00000061      77734        955 'CxformTextureMultiply'
+   33 0x00011009 0x00000059      78689        815 'gfxtextshader'
+   34 0x00011009 0x00000055      79504        783 'hud_2dmarker'
+   35 0x00011009 0x0000005d      80287        823 'hud_minimapmarker'

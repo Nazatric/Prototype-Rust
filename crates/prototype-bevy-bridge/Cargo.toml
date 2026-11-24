@@ -1,0 +1,66 @@
+[package]
+name = "prototype-bevy-bridge"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Bevy bridge: expose prototype-p3d mesh/skeleton/anim data as Bevy assets (loader-style, game files stay user-supplied)"
+
+[dependencies]
+prototype-p3d = { workspace = true }
+prototype-math = { workspace = true }
+prototype-render = { workspace = true }
+prototype-video = { workspace = true }
+# Bevy 0.15 glue is OPTIONAL: the extraction layer (this crate's default)
+# is pure Rust f32 arrays with no bevy dependency at all, so the rest of
+# the workspace (and the android targets) never pay for the bevy graph.
+# `--features bevy` pulls the facade crate with the minimal headless
+# feature set (no winit/windowing — compile-gate + headless tests only).
+bevy = { version = "0.15", optional = true, default-features = false, features = [
+    "bevy_asset",
+    "bevy_animation",
+    "bevy_pbr",
+] }
+# Block 92: TimePlugin + the `Time` resource for the headless
+# AnimationPlayer tick test (advance_by + delta_secs drive playback).
+# The 0.15 facade has NO bevy_time passthrough feature, so the crate is
+# a direct optional dependency — version-matched 0.15.3 = the SAME
+# crate instance bevy_animation's `Res<Time>` uses (single type).
+bevy_time = { version = "0.15", optional = true }
+
+[features]
+default = []
+bevy = ["dep:bevy", "dep:bevy_time"]
+# Block 97 (NEXT-UP #1): the WINDOWED app.  Features enumerated EXPLICITLY
+# (NOT bevy/default): default would also pull bevy_gilrs (links system
+# libudev — may not exist in the sandbox) and bevy_audio (rodio/cpal).
+# With the features off, DefaultPlugins simply excludes GilrsPlugin /
+# AudioPlugin / UiPlugin / ScenePlugin — the remaining set is the
+# classic minimal windowed render app (winit + window + render +
+# core_pipeline + pbr + asset + animation + input).  x11 = x11rb
+# pure-Rust + runtime dlopen, no build-time libX11 link.
+# USER-SIDE render: the sandbox compile-checks this; it cannot open a
+# window (no display server).
+bevy-window = [
+    "bevy",
+    "bevy/bevy_winit",
+    "bevy/bevy_window",
+    "bevy/bevy_core_pipeline",
+    "bevy/bevy_render",
+    "bevy/bevy_image",
+    "bevy/bevy_pbr",
+    "bevy/bevy_asset",
+    "bevy/bevy_animation",
+    "bevy/multi_threaded",
+    "bevy/x11",
+]
+
+# The block-94 render example needs the real AnimationPlayer (bevy).
+[[example]]
+name = "bevy_render_run"
+required-features = ["bevy"]
+
+# Block 97: the windowed app (real winit window + real GPU skinned mesh).
+[[example]]
+name = "bevy_window_run"
+required-features = ["bevy-window"]

@@ -1,0 +1,170 @@
+{
+  "root": "/home/z/my-project/source/ADM",
+  "files": [
+    {
+      "path": "10150_install.vdf",
+      "name": "10150_install.vdf",
+      "size": 990,
+      "kind": "TEXT",
+      "generic": {
+        "path": "/home/z/my-project/source/ADM/10150_install.vdf",
+        "size": 990,
+        "sha1_prefix": "f312ce9a93627767",
+        "first_bytes_hex": "22696e7374616c6c736372697074220d0a7b0d0a09225265676973747279220d",
+        "first_bytes_ascii": "\"installscript\"..{...\"Registry\"."
+      }
+    },
+    {
+      "path": "art/frontendshaders.p3d",
+      "name": "frontendshaders.p3d",
+      "size": 81110,
+      "kind": "UNKNOWN",
+      "generic": {
+        "path": "/home/z/my-project/source/ADM/art/frontendshaders.p3d",
+        "size": 81110,
+        "sha1_prefix": "0c2279193e57e8d9",
+        "first_bytes_hex": "503344ff0c000000d63c01000b10010041000000e10a0000284378666f726d47",
+        "first_bytes_ascii": "P3D......<......A.......(CxformG"
+      }
+    },
+    {
+      "path": "audio/boot_strap.p3d",
+      "name": "boot_strap.p3d",
+      "size": 3969452,
+      "kind": "UNKNOWN",
+      "generic": {
+        "path": "/home/z/my-project/source/ADM/audio/boot_strap.p3d",
+        "size": 3969452,
+        "sha1_prefix": "6607ca3b2785d160",
+        "first_bytes_hex": "503344ff0c000000ac913c00000000feb39c0000b39c00000a00000009000000",
+        "first_bytes_ascii": "P3D.......<....................."
+      }
+    },
+    {
+      "path": "binkw32.dll",
+      "name": "binkw32.dll",
+      "size": 171008,
+      "kind": "PE",
+      "error": "'ResourceDirData' object has no attribute 'directory'"
+    },
+    {
+      "path": "cementfiles.p3d",
+      "name": "cementfiles.p3d",
+      "size": 338,
+      "kind": "UNKNOWN",
+      "generic": {
+        "path": "/home/z/my-project/source/ADM/cementfiles.p3d",
+        "size": 338,
+        "sha1_prefix": "cd2088965091c8f3",
+        "first_bytes_hex": "503344ff0c000000520100000000f0077b0000004601000034436f6e74656e74",
+        "first_bytes_ascii": "P3D.....R.......{...F...4Content"
+      }
+    },
+    {
+      "path": "proto_uv.dat",
+      "name": "proto_uv.dat",
+      "size": 1024,
+      "kind": "UNKNOWN",
+      "generic": {
+        "path": "/home/z/my-project/source/ADM/proto_uv.dat",
+        "size": 1024,
+        "sha1_prefix": "3f307c00975ec947",
+        "first_bytes_hex": "ae341e7f563a5f8b483760258b673b9258b86e092e1139e9ec8536bb53c7f682",
+        "first_bytes_ascii": ".4..V:_.H7`%.g;.X.n...9...6.S..."
+      }
+    },
+    {
+      "path": "prototypeenginef.dll",
+      "name": "prototypeenginef.dll",
+      "size": 20205568,
+      "kind": "PE",
+      "error": "'ResourceDirData' object has no attribute 'directory'"
+    },
+    {
+      "path": "prototypef.exe",
+      "name": "prototypef.exe",
+      "size": 2464240,
+      "kind": "PE",
+      "error": "'ResourceDirData' object has no attribute 'directory'"
+    },
+    {
+      "path": "prototypef.sls",
+      "name": "prototypef.sls",
+      "size": 2462200,
+      "kind": "PE",
+      "error": "'ResourceDirData' object has no attribute 'directory'"
+    },
+    {
+      "path": "scripts/frevents.lua",
+      "name": "frevents.lua",
+      "size": 4383,
+      "kind": "UNKNOWN",
+      "generic": {
+        "path": "/home/z/my-project/source/ADM/scripts/frevents.lua",
+        "size": 4383,
+        "sha1_prefix": "32d7926c96356f4a",
+        "first_bytes_hex": "1b4c7561510001040404040000000000000000000000000000000235a0020000",
+        "first_bytes_ascii": ".LuaQ......................5...."
+      }
+    },
+    {
+      "path": "scripts/statsachievements_tod.p3d",
+      "name": "statsachievements_tod.p3d",
+      "size": 8683,
+      "kind": "UNKNOWN",
+      "generic": {
+        "path": "/home/z/my-project/source/ADM/scripts/statsachievements_tod.p3d",
+        "size": 8683,
+        "sha1_prefix": "22f0c89170129f25",
+        "first_bytes_hex": "503344ff0c000000eb2100000000f0075f000000671a00002470726f746f3a3a",
+        "first_bytes_ascii": "P3D......!......_...g...$proto::"
+      }
+    },
+    {
+      "path": "scripts.rcf",
+      "name": "scripts.rcf",
+      "size": 186638,
+      "kind": "UNKNOWN",
+      "generic": {
+        "path": "/home/z/my-project/source/ADM/scripts.rcf",
+        "size": 186638,
+        "sha1_prefix": "58f648a9f3b30267",
+        "first_bytes_hex": "41544720434f52452043454d454e54204c494252415259000000000000000000",
+        "first_bytes_ascii": "ATG CORE CEMENT LIBRARY........."
+      }
+    },
+    {
+      "path": "shaders.rcf",
+      "name": "shaders.rcf",
+      "size": 10793,
+      "kind": "UNKNOWN",
+      "generic": {
+        "path": "/home/z/my-project/source/ADM/shaders.rcf",
+        "size": 10793,
+        "sha1_prefix": "7de718175a31daf0",
+        "first_bytes_hex": "41544720434f52452043454d454e54204c494252415259000000000000000000",
+        "first_bytes_ascii": "ATG CORE CEMENT LIBRARY........."
+      }
+    },
+    {
+      "path": "skuinfo.p3d",
+      "name": "skuinfo.p3d",
+      "size": 184,
+      "kind": "UNKNOWN",
+      "generic": {
+        "path": "/home/z/my-project/source/ADM/skuinfo.p3d",
+        "size": 184,
+        "sha1_prefix": "6314cba0775cadc5",
+        "first_bytes_hex": "503344ff0c000000b80000000000f0074b000000ac0000001c656e67696e653a",
+        "first_bytes_ascii": "P3D.............K........engine:"
+      }
+    },
+    {
+      "path": "vcredist_x86.exe",
+      "name": "vcredist_x86.exe",
+      "size": 2723264,
+      "kind": "PE",
+      "error": "'ResourceDirData' object has no attribute 'directory'"
+    }
+  ]
+}
