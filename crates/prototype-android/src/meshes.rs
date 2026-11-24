@@ -429,11 +429,20 @@ where
         archive_paths.into_iter().map(|p| p.as_ref().to_path_buf()).collect();
     let scan_opts = opts;
     let mut world = WorldScanReport::default();
+    // Block 104: pass 1 on a PHONE cannot hold every archive's bytes in
+    // RAM (the user's real corpus is ~2 GB — the block-103 boot's worker
+    // entered this pass and never came back) and never needs pass 2
+    // when `max_meshes` is 0.  So the archive bytes are retained ONLY
+    // when meshes will actually be decoded (pass 2 re-parses from them);
+    // a LEAN run decompresses member-by-member and keeps nothing but
+    // the INDEX — the memory peak is one decompressed member.
+    let keep_archives = max_meshes > 0;
     // pass 1: parse every archive once, index every member; remember
     // (global member index) -> (archive slot, local entry index).
     let mut archive_data: Vec<Vec<u8>> = Vec::new();
     let mut member_locs: Vec<(usize, usize)> = Vec::new();
-    for path in &paths {
+    let started = std::time::Instant::now();
+    for (ai, path) in paths.iter().enumerate() {
         let data = match std::fs::read(path) {
             Ok(d) => d,
             Err(e) => {
@@ -445,8 +454,9 @@ where
             }
         };
         // The archive borrows `data`, so the owned copy is stored AFTER
-        // the index pass below; pass 2 re-parses from the owned bytes
-        // (the header+directory parse is O(entries), negligible).
+        // the index pass below (when retained); pass 2 re-parses from
+        // the owned bytes (the header+directory parse is O(entries),
+        // negligible).
         let archive = match prototype_rcf::RcfArchive::parse(&data) {
             Ok(a) => a,
             Err(e) => {
@@ -459,6 +469,7 @@ where
         };
         world.archives_opened += 1;
         let slot = archive_data.len();
+        let member_count = archive.entries.len();
         for (li, entry) in archive.entries.iter().enumerate() {
             world.members_scanned += 1;
             match archive.payload_decompressed(entry) {
@@ -468,7 +479,9 @@ where
                         &p3d,
                         scan_opts,
                     ));
-                    member_locs.push((slot, li));
+                    if keep_archives {
+                        member_locs.push((slot, li));
+                    }
                 }
                 Err(e) => {
                     world.errors += 1;
@@ -480,8 +493,33 @@ where
                     }
                 }
             }
+            // Block 104: progress journaling — a real corpus takes
+            // minutes on a phone and boot-log.txt is the ONLY thing the
+            // user can share; the log must visibly MOVE.
+            if world.members_scanned % 250 == 0 {
+                let line = format!(
+                    "index: {} member(s) across {} archive(s), {} indexed, {:.1}s",
+                    world.members_scanned,
+                    world.archives_opened,
+                    world.index.entries.len(),
+                    started.elapsed().as_secs_f32()
+                );
+                log::info!("{line}");
+                crate::boot_log::bootlog(&line);
+            }
         }
-        archive_data.push(data);
+        if keep_archives {
+            archive_data.push(data);
+        }
+        let line = format!(
+            "index: archive {} ({}) done — {} member(s), {:.1}s elapsed",
+            ai,
+            path.display(),
+            member_count,
+            started.elapsed().as_secs_f32()
+        );
+        log::info!("{line}");
+        crate::boot_log::bootlog(&line);
     }
     // pass 2: near order over (distance, global index)
     let mut order: Vec<usize> = (0..world.index.entries.len()).collect();
@@ -874,6 +912,42 @@ fn geo_shape_name(p3d: &[u8], chunk: &geo::ChildChunk) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Block 104: the LEAN index pass (`max_meshes = 0`) — the phone
+    /// boot path.  The world index must be COMPLETE (every member
+    /// indexed, placements retained) while NO mesh is decoded and no
+    /// archive bytes are retained (the block-103 worker died holding
+    /// ~2 GB of archive data on the user's phone).
+    #[test]
+    fn lean_index_pass_indexes_everything_but_decodes_nothing() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("prototype-bin")
+            .join("tests")
+            .join("fixtures")
+            .join("cells_pairing.rcf");
+        let (rep, world) = collect_meshes_near(
+            [&path],
+            [0.0; 3],
+            0,
+            prototype_p3d::world::ScanOptions {
+                retain_objects: true,
+                retain_shape_names: true,
+                retain_node_transforms: true,
+            },
+        );
+        // NO mesh was decoded — the stream owns geometry.
+        assert!(rep.meshes.is_empty());
+        assert!(rep.capped, "max_meshes = 0 caps immediately");
+        // The index is COMPLETE: every member scanned is indexed.
+        assert!(world.members_scanned > 0);
+        assert_eq!(world.index.entries.len(), world.members_scanned as usize);
+        assert_eq!(world.archives_opened, 1);
+        assert_eq!(world.errors, 0);
+        // The lean index still feeds the spawn + pairing machinery.
+        let pairs = world.index.pair_drawables(usize::MAX);
+        assert_eq!(pairs.pairs.len(), 4, "pairing works off the lean index");
+    }
 
     /// Block 22: the paired-drawable load path on the REAL Cell_82
     /// members (cells_pairing.rcf = real object member 0x51A2CA3B +

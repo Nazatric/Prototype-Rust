@@ -550,6 +550,10 @@ pub struct App {
     /// the event loop past Android's ~10 s ANR limit and the OS killed
     /// the app mid-boot.
     boot_phase: BootPhase,
+    /// Block 104: when the current boot attempt started — drives the
+    /// pulsing boot tint (static grey reads as a hang) and the
+    /// "booted in Ns" toast.  None = nothing in flight.
+    boot_started: Option<Instant>,
     /// Surface aspect ratio (updated on resize + boot).
     aspect: f32,
     /// Logged-once flag: the pipeline lacks the WVP uniform (rows 0 —
@@ -817,11 +821,17 @@ fn cpu_boot_work(set: GameFileSet, tx: mpsc::Sender<Result<CpuBootArtifacts, Str
         ));
         let world_plan = report.world.clone();
 
-        boot_log::stage("cpu: world archive scan (collect_meshes_near)");
+        boot_log::stage("cpu: world archive index (LEAN — no mesh decode)");
+        // Block 104: max_meshes = 0.  The block-103 boot decoded meshes
+        // here and NEVER RETURNED on the user's phone: pass 1 held every
+        // archive byte in RAM (~2 GB corpus) and decompressed everything.
+        // The lean boot indexes the world member-by-member (a few MB
+        // peak) and DEFERS all geometry to the per-frame streaming —
+        // block 44's design was built for exactly this.
         let (scan, world) = crate::meshes::collect_meshes_near(
             &set.rcf_archives,
             [0.0, 0.0, 0.0],
-            16,
+            0,
             prototype_p3d::world::ScanOptions {
                 retain_objects: true,
                 // block 22: the pairing needs every shape name and the
@@ -842,14 +852,12 @@ fn cpu_boot_work(set: GameFileSet, tx: mpsc::Sender<Result<CpuBootArtifacts, Str
             log::warn!("mesh scan: {e}");
         }
 
-        boot_log::stage("cpu: pair drawables + paired meshes");
+        boot_log::stage("cpu: pair drawables");
         let pair_rep = world.index.pair_drawables(PAIR_CAP);
-        let pm_rep = crate::meshes::collect_paired_meshes(
-            &set.rcf_archives,
-            &pair_rep.pairs,
-            [0.0, 0.0, 0.0],
-            PAIRED_MESH_CAP,
-        );
+        // Block 104: NO boot-time paired mesh decode — the stream's
+        // paired half loads them per frame.  The report stays empty
+        // (its fields default to 0 and the logs say so honestly).
+        let pm_rep = crate::meshes::PairedMeshReport::default();
         boot_log::bootlog(&format!(
             "paired: {} pair(s) of {} drawable record(s) ({} prop-table skipped), {} mesh(es) from {} member(s), {} shape(s) missing",
             pair_rep.pairs.len(),
@@ -940,6 +948,7 @@ impl App {
             storage: StorageState::Granted,
             last_setup_toast: None,
             boot_phase: BootPhase::Idle,
+            boot_started: None,
             aspect: 1.0,
             warned_no_wvp: false,
             logged_first_frame: false,
@@ -2110,6 +2119,7 @@ impl App {
     /// artifacts arrive (see [`App::pump_boot`]).
     fn spawn_boot(&mut self, set: GameFileSet) {
         boot_log::stage("spawn cpu worker");
+        self.boot_started = Some(Instant::now());
         let (tx, rx) = mpsc::channel();
         match std::thread::Builder::new()
             .name("prototype-boot".into())
@@ -2530,10 +2540,15 @@ impl App {
             self.boot_fail("renderer gone before attach".into());
             return;
         };
-        if world_built > 0 {
+        // Block 104: the streaming gate is the INDEX, not the boot's
+        // mesh count — the lean boot decodes NO meshes at boot and the
+        // per-frame stream owns geometry.  Only a world with NO indexed
+        // members at all (nothing parsed) falls back to debug triangles.
+        let index_members = art.world.index.entries.len();
+        if index_members > 0 {
             log::info!(
-                "mesh batches: {} world-space mesh(es) through pipeline '{}' (debug materials), per-frame player-camera WVP",
-                world_built,
+                "world index: {} member(s) (pipeline '{}'); the boot decodes no meshes — the per-frame stream loads geometry",
+                index_members,
                 mesh_pipe_name
             );
             // Block 44: the member stream attaches over the SAME scanned
@@ -2683,7 +2698,11 @@ impl App {
         self.status_render = false;
         boot_log::bootlog("BOOT COMPLETE");
         if let Some(ui) = self.platform.as_ref() {
-            ui.toast("Engine booted");
+            let secs = self
+                .boot_started
+                .map(|t| t.elapsed().as_secs_f32())
+                .unwrap_or(0.0);
+            ui.toast(&format!("Engine booted in {:.0}s", secs));
         }
         if let Some(w) = &self.window {
             w.request_redraw();
@@ -2768,6 +2787,7 @@ impl App {
         // next resume spawns a fresh worker (a detached old worker's
         // artifacts drop on its failed send; CPU-only, harmless).
         self.boot_phase = BootPhase::Idle;
+        self.boot_started = None;
         self.pipelines.clear();
         self.world_pipeline = None;
         self.batches.clear();
@@ -2902,9 +2922,20 @@ impl ApplicationHandler for App {
                         (AppState::Ready(_), BootPhase::Done) => StatusScreen::Ready,
                         _ => StatusScreen::Boot,
                     };
-                    if let (Some(r), Some(color)) =
-                        (self.renderer.as_mut(), status_clear_color(screen, self.storage))
-                    {
+                    let mut color = match status_clear_color(screen, self.storage) {
+                        Some(c) => c,
+                        None => return,
+                    };
+                    // Block 104: PULSE the booting tint — a slow breath
+                    // on brightness.  A static grey is indistinguishable
+                    // from a hang; the user must SEE the boot working.
+                    if matches!(screen, StatusScreen::Boot) {
+                        if let Some(t0) = self.boot_started {
+                            let k = 0.80 + 0.20 * (t0.elapsed().as_secs_f64() * 1.6).sin();
+                            color = [color[0] * k, color[1] * k, color[2] * k, 1.0];
+                        }
+                    }
+                    if let Some(r) = self.renderer.as_mut() {
                         if let Err(e) = r.render_frame(color, &[]) {
                             log::warn!("status frame failed: {e:?}");
                         }

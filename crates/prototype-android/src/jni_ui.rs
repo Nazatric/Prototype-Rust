@@ -41,7 +41,7 @@
 
 use android_activity::AndroidApp;
 use jni::{jni_sig, jni_str};
-use jni::objects::{JString, JValue};
+use jni::objects::{JObject, JString, JValue};
 use jni::refs::Global;
 
 use crate::platform_ui::{storage_plan, PlatformUi, StorageState, StoragePlan};
@@ -124,13 +124,21 @@ impl AndroidUi {
         let jvm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr() as _) };
         jvm.attach_current_thread(|env| -> jni::errors::Result<bool> {
             let env_cls = env.find_class(jni_str!("android/os/Environment"))?;
-            let res = env.call_static_method(
+            match env.call_static_method(
                 &env_cls,
                 jni_str!("isExternalStorageManager"),
                 jni_sig!("()Z"),
                 &[],
-            )?;
-            res.z()
+            ) {
+                Ok(res) => res.z(),
+                // A pending Java exception would poison every later JNI
+                // call on this thread — clear it before reporting the
+                // miss (fail-closed toward asking = the safe side).
+                Err(e) => {
+                    let _ = env.exception_clear();
+                    Err(e)
+                }
+            }
         })
         .unwrap_or_else(|e| {
             log::warn!("platform ui: all-files check failed (non-fatal): {e:?}");
@@ -161,7 +169,14 @@ impl AndroidUi {
         })
     }
 
-    /// Open the Android 11+ all-files-access settings page (main thread).
+    /// Open the Android 11+ all-files-access settings.  Block 104: try
+    /// the APP-SPECIFIC toggle page first (`ACTION_MANAGE_APP_ALL_FILES_
+    /// ACCESS_PERMISSION` + a `package:` URI — ONE tap for the user);
+    /// ANY failure (ActivityNotFoundException on some OEM builds, a JNI
+    /// hiccup) falls back to the plain list page, which every API 30+
+    /// device has.  The pending Java exception is cleared before the
+    /// fallback (a left-pending exception would poison every later JNI
+    /// call on the thread).
     fn open_all_files_settings(&self) {
         let app = self.app.clone();
         self.app.run_on_java_main_thread(Box::new(move || {
@@ -171,21 +186,76 @@ impl AndroidUi {
                 let activity: jni::sys::jobject = app.activity_as_ptr() as _;
                 // SAFETY: borrows the unowned global (docs' pattern).
                 let activity = unsafe { env.as_cast_raw::<Global<Activity>>(&activity)? };
-                let action = env.new_string(
-                    "android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION",
-                )?;
                 let intent_cls = env.find_class(jni_str!("android/content/Intent"))?;
-                let intent = env.new_object(
-                    &intent_cls,
-                    jni_sig!("(Ljava/lang/String;)V"),
-                    &[JValue::Object(&action)],
-                )?;
-                env.call_method(
-                    activity.as_ref(),
-                    jni_str!("startActivity"),
-                    jni_sig!("(Landroid/content/Intent;)V"),
-                    &[JValue::Object(&intent)],
-                )?;
+                let uri_cls = env.find_class(jni_str!("android/net/Uri"))?;
+
+                // Attempt 1: the APP-SPECIFIC all-files toggle page.
+                // Uri.fromParts("package", <pkg>, null) IS the
+                // `package:<pkg>` URI without any Java-side string
+                // concat, and the package name goes Java→Java (the
+                // getPackageName result straight into Uri.fromParts —
+                // no Rust round-trip, no MUTF8 dance).
+                let direct = (|| -> jni::errors::Result<()> {
+                    let action = env.new_string(
+                        "android.settings.MANAGE_APP_ALL_FILES_ACCESS_PERMISSION",
+                    )?;
+                    let package = env
+                        .call_method(
+                            activity.as_ref(),
+                            jni_str!("getPackageName"),
+                            jni_sig!("()Ljava/lang/String;"),
+                            &[],
+                        )?
+                        .l()?;
+                    let scheme = env.new_string("package")?;
+                    let uri = env
+                        .call_static_method(
+                            &uri_cls,
+                            jni_str!("fromParts"),
+                            jni_sig!("(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Landroid/net/Uri;"),
+                            &[JValue::Object(&scheme), JValue::Object(&package), JValue::Object(&JObject::null())],
+                        )?
+                        .l()?;
+                    let intent = env.new_object(
+                        &intent_cls,
+                        jni_sig!("(Ljava/lang/String;)V"),
+                        &[JValue::Object(&action)],
+                    )?;
+                    env.call_method(
+                        &intent,
+                        jni_str!("setData"),
+                        jni_sig!("(Landroid/net/Uri;)Landroid/content/Intent;"),
+                        &[JValue::Object(&uri)],
+                    )?;
+                    env.call_method(
+                        activity.as_ref(),
+                        jni_str!("startActivity"),
+                        jni_sig!("(Landroid/content/Intent;)V"),
+                        &[JValue::Object(&intent)],
+                    )?;
+                    Ok(())
+                })();
+                if direct.is_err() {
+                    // Clear the pending exception (ActivityNotFound on
+                    // some OEM builds) before the fallback.
+                    let _ = env.exception_clear();
+                    // Attempt 2: the all-files LIST page (always exists
+                    // on API 30+; the block-102 behaviour).
+                    let action = env.new_string(
+                        "android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION",
+                    )?;
+                    let intent = env.new_object(
+                        &intent_cls,
+                        jni_sig!("(Ljava/lang/String;)V"),
+                        &[JValue::Object(&action)],
+                    )?;
+                    env.call_method(
+                        activity.as_ref(),
+                        jni_str!("startActivity"),
+                        jni_sig!("(Landroid/content/Intent;)V"),
+                        &[JValue::Object(&intent)],
+                    )?;
+                }
                 Ok(())
             }) {
                 log::warn!("platform ui: all-files settings failed (non-fatal): {err:?}");
@@ -223,7 +293,14 @@ impl AndroidUi {
 impl PlatformUi for AndroidUi {
     fn ensure_storage(&mut self) -> StorageState {
         let api = AndroidApp::sdk_version();
-        match storage_plan(api, true) {
+        // Block 104 FIX (the user's yellow screen): block 103 shipped a
+        // LITERAL `true` as the granted flag, so the app reported
+        // Granted on a fresh install and never opened Settings.  The
+        // flag must come from the REAL all-files check — and only on
+        // API 30+ (the method does not exist below it; a pre-30 call
+        // would leave a pending Java exception on the thread).
+        let granted = if api >= 30 { self.all_files_granted() } else { false };
+        match storage_plan(api, granted) {
             StoragePlan::Granted => StorageState::Granted,
             StoragePlan::AllFilesSettings => {
                 if self.all_files_granted() {

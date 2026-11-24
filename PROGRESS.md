@@ -1,7 +1,70 @@
-Last updated: 2026-11-25 ~0x:0x UTC+8 — user session (no cron);
-block 103 complete (the ~10 s on-device boot crash: ANR + crash
-journal).  Block 102 CONFIRMED WORKING on the user's phone: amber
-status screen, storage grant flow, folder creation, Setup toasts.
+Last updated: 2026-11-24 late (user session, no cron);
+block 104 complete (the user's second on-device run: the block-103
+ANR fix HELD — no more 10 s death — but the boot's full index+mesh
+pass never returned on the phone, and the storage grant flow never
+fired because of a hardcoded literal.  Both fixed here).
+
+(Block 104 — THE USER'S SECOND RUN: TWO REAL BUGS, BOTH FROM THE
+BLOCK-103 LOG THE USER UPLOADED (boot-log.txt — the journal paid for
+itself on its first outing).  The ANR fix HELD: no 10-second death;
+the app stayed alive on the booting grey.  But (a) the boot entered
+`collect_meshes_near` and NEVER CAME BACK — pass 1 read EVERY archive
+fully into RAM (~2 GB real corpus) AND decompressed every member; on
+a phone that is an OOM kill or a 20+ minute crawl — the log ends at
+the scan stage with no completion, no PANIC, nothing; and (b) the
+storage grant flow NEVER fired on a fresh install — the user saw the
+AMBER (granted) screen and had to find the all-files toggle manually
+AGAIN, asking "how will people allow all files access".  Root cause
+(b): jni_ui's ensure_storage called `storage_plan(api, true)` — a
+HARDCODED `true` as the granted flag, so the real
+`isExternalStorageManager()` check was never called and the app
+reported Granted on a fresh install.  Root cause (a): the boot's
+"real geometry first" design was a PC-evidence shape; a phone needs
+the lean one.)
+
+(1) STORAGE GRANT FIXED (jni_ui.rs).  `storage_plan(api,
+all_files_granted())` — the REAL check now runs, and only on API 30+
+(calling the method below 30 would leave a pending Java exception);
+`all_files_granted()` clears any pending exception on failure (fail-
+closed toward asking).  The settings intent now tries the APP-
+SPECIFIC toggle page first (ACTION_MANAGE_APP_ALL_FILES_ACCESS_
+PERMISSION + `Uri.fromParts("package", <pkg>, null)` — ONE tap, no
+Java-side string concat, the package name goes Java->Java) and falls
+back to the device-wide list page on ANY failure (the pending
+exception is cleared first).  First launch on a fresh install now:
+red screen + toast + the app's own toggle page opens automatically.
+
+(2) LEAN BOOT (meshes.rs + app.rs worker).  collect_meshes_near pass
+1 no longer retains archive bytes when `max_meshes == 0` — the memory
+peak drops to ONE decompressed member — and journals progress every
+250 members + per archive ("index: ... 12.3s") into boot-log.txt.
+The worker calls it with max_meshes = 0: the boot INDEXES the world
+(every member, placements retained) and decodes NO meshes — all
+geometry loads through the per-frame streaming (block 44's design).
+collect_paired_meshes is likewise skipped (empty report).  The attach
+gate is now the INDEX (entries > 0), not the boot's mesh count — the
+stream + draw-selector attach on any non-empty index (the frame path
+needs both to stream).  Debug triangles only when NOTHING parsed.
+First boot on the phone: index pass (~2 GB decompress, minutes, with
+visible progress + pulsing tint), then the world comes up and the
+stream fills geometry per frame.  A lean-index unit test proves the
+contract on the real Cell_82 fixture (full index, zero meshes,
+pairing intact).  NEXT-UP: a one-time world-index CACHE file in the
+asset folder (no serde in the workspace — custom format + version
+marker) to make boots 2+ instant.
+
+(3) BOOT VISIBILITY.  The booting tint now PULSES (slow breath on
+brightness — a static grey is indistinguishable from a hang), and the
+Done toast reports the boot duration ("Engine booted in 74s").
+
+Verified in-sandbox before push: workspace 868/0 (+lean test);
+aarch64 --features android-activity check clean (the jni 0.22 API
+lessons: no JString-from-JObject conversion, no JValue::Null, no
+explicit JNIEnv annotations — Uri.fromParts + inline closures only);
+winit-app check clean.  KNOWN-REMAINING: every boot runs the full
+index pass (no cache yet) — minutes on a phone, stated honestly; the
+shader-prep stage measured 10.2 s on the device (on the worker,
+harmless to the loop).
 
 (Block 103 — THE ~10 s ON-DEVICE BOOT CRASH: ANR, WORKER-THREAD CPU
 BOOT, CHUNKED GPU STAGES + A CRASH JOURNAL THE USER CAN SHARE.  The
