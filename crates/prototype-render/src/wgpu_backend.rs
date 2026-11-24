@@ -457,6 +457,9 @@ pub struct Renderer {
     queue: wgpu::Queue,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
+    /// Block 107: the menu/UI pass (built lazily via [`Renderer::init_ui`];
+    /// None until then — a plain world frame needs nothing from it).
+    pub ui: Option<crate::ui::gpu::UiPass>,
 }
 
 impl Renderer {
@@ -519,7 +522,22 @@ impl Renderer {
         };
         surface.configure(&device, &config);
 
-        Ok(Self { device, queue, surface, config })
+        Ok(Self { device, queue, surface, config, ui: None })
+    }
+
+    /// Block 107: build the menu/UI pass (font atlas upload + pipeline)
+    /// against the current surface size.  Returns the CPU atlas for the
+    /// caller's text layout.  Call once after `new` (and never re-call —
+    /// the atlas is static; resizes just update the ortho uniform).
+    pub fn init_ui(&mut self) -> crate::FontAtlas {
+        let (pass, atlas) = crate::ui::gpu::UiPass::new(
+            &self.device,
+            &self.queue,
+            self.config.format,
+            [self.config.width as f32, self.config.height as f32],
+        );
+        self.ui = Some(pass);
+        atlas
     }
 
     /// The surface's chosen format — create pipelines with this.
@@ -532,6 +550,18 @@ impl Renderer {
         self.config.width = width.max(1);
         self.config.height = height.max(1);
         self.surface.configure(&self.device, &self.config);
+        // Block 107: the UI ortho basis follows the surface.
+        if let Some(ui) = &self.ui {
+            ui.set_screen(
+                &self.queue,
+                [self.config.width as f32, self.config.height as f32],
+            );
+        }
+    }
+
+    /// The current surface size (the menu layout's ortho basis).
+    pub fn surface_size(&self) -> (u32, u32) {
+        (self.config.width, self.config.height)
     }
 
     /// Borrow the device (bind groups, buffers, pipelines).
@@ -555,6 +585,54 @@ impl Renderer {
         batches: &[DebugDrawBatch],
     ) -> Result<(), wgpu::SurfaceError> {
         self.encode_frame(clear, batches.iter())
+    }
+
+    /// Block 107: the same frame with the MENU/UI layer composited on
+    /// top (a second, alpha-blended pass — load:Load so the world or
+    /// clear color shows through).  `list` must have been laid out for
+    /// the CURRENT surface size.  `init_ui` must have run.
+    pub fn render_frame_with_ui(
+        &mut self,
+        clear: [f64; 4],
+        batches: &[DebugDrawBatch],
+        list: &crate::ui::UiDrawList,
+    ) -> Result<(), wgpu::SurfaceError> {
+        let Some(ui) = self.ui.as_mut() else {
+            return self.encode_frame(clear, batches.iter());
+        };
+        ui.upload(&self.device, &self.queue, list);
+        self.encode_frame(clear, batches.iter())?;
+        // Second pass: UI over the world (same texture, load:Load).
+        let frame = self.surface.get_current_texture()?;
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("prototype-rs ui frame"),
+            });
+        let ui = self.ui.as_ref().expect("checked above");
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("prototype-rs ui pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            ui.draw(&mut pass, list);
+        }
+        self.queue.submit(Some(encoder.finish()));
+        frame.present();
+        Ok(())
     }
 
     /// M25b (block 20): the same frame with a per-frame SELECTED

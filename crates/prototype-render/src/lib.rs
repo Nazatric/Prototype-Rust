@@ -50,6 +50,19 @@ pub mod shader;
 pub mod pipeline;
 pub mod dxt;
 pub mod video_quad;
+
+/// Block 107 — the menu/UI text layer: bundled-font atlas + ortho
+/// quad renderer.  The native draw path for the REAL `art\hud\*.gfx`
+/// screen catalog (proven from the engine DLL strings) until the
+/// Scaleform shapes themselves are extracted; the frontend sprite
+/// shader contract it will ride on is block 101's
+/// [`render_frontend_cpu`] (the REAL cxformtexture/cxformsolidcolour
+/// pairs from `frontendshaders.p3d`).
+pub mod ui;
+
+/// Root re-exports: the menu layer's CPU types (every caller wants
+/// them without the `ui::` hop).
+pub use ui::{FontAtlas, UiDrawList, UiVertex};
 /// Block 76 — the RENDER_ART_WORLD_PATCH harness's device-free CPU
 /// mirror: real `SceneMesh` + proven camera math + daylight fragment
 /// rows → RGBA8 → PNG evidence (sandbox-runnable; the GPU path stays

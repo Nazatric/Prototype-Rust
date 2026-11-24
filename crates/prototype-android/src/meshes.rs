@@ -958,6 +958,7 @@ fn lean_index_one_archive(
     let member_count = archive.entries.len();
     for entry in archive.entries.iter() {
         rep.members_scanned += 1;
+        crate::boot_log::progress_members(1);
         match archive.payload_decompressed(entry) {
             Ok(p3d) => {
                 rep.entries
@@ -998,6 +999,7 @@ fn lean_index_one_archive(
     );
     log::info!("{line}");
     crate::boot_log::bootlog(&line);
+    crate::boot_log::progress_archive_done();
     rep
 }
 

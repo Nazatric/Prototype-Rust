@@ -19,11 +19,18 @@ prototype-math   = { workspace = true }
 # Block 103: the uncaptured-wgpu-error handler logs instead of panicking
 # (wgpu's default handler would kill the app on a phone).
 log              = "0.4"
+# Block 107: the UI vertex is a raw GPU buffer type (Pod/Zeroable).
+bytemuck         = { workspace = true }
 
 # Real wgpu render loop — feature-gated so default builds (and every
 # sandboxed `cargo test`) never compile it; `cargo check --features
 # render-wgpu` is the compile gate (no GPU needed to check).
 wgpu             = { workspace = true, optional = true }
+# Block 107: the menu system's text — a pure-Rust TTF rasterizer (no
+# C deps, compiles everywhere).  The atlas build + text layout are CPU
+# work and ARE covered by default-feature tests; only the GPU upload
+# needs the feature.
+fontdue          = "0.9"
 
 [dev-dependencies]
 prototype-rcf    = { workspace = true }

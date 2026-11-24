@@ -554,6 +554,25 @@ pub struct App {
     /// pulsing boot tint (static grey reads as a hang) and the
     /// "booted in Ns" toast.  None = nothing in flight.
     boot_started: Option<Instant>,
+    /// Block 107: the REAL menu system (screen + selection) — every
+    /// non-world state renders through it; the flat debug tints are
+    /// gone.
+    menu: crate::menu::MenuState,
+    /// Block 107: the menu font atlas (built with the renderer).
+    atlas: Option<prototype_render::FontAtlas>,
+    /// Block 107: the menu hit regions (rebuilt every menu frame;
+    /// pointer input hit-tests the LAST frame's layout).
+    menu_hits: crate::menu::HitRegions,
+    /// Block 107: the pointer position (menu row hit-testing).
+    cursor: [f32; 2],
+    /// Block 107: the world is being PLAYED (menus hidden; the frame
+    /// path streams + renders the world).
+    in_world: bool,
+    /// Block 107: persisted settings (streaming/audio/controls knobs
+    /// wired to real engine behaviour).
+    settings: crate::settings::Settings,
+    /// Block 107: quit requested by the menu (executed in window_event).
+    quit_requested: bool,
     /// Surface aspect ratio (updated on resize + boot).
     aspect: f32,
     /// Logged-once flag: the pipeline lacks the WVP uniform (rows 0 —
@@ -863,6 +882,7 @@ fn index_world_cached(
             )
         })
         .collect();
+    boot_log::progress_plan(index_paths.len());
     let fp = prototype_p3d::index_fingerprint(&lens, opts);
     let cache_path = set
         .rcf_archives
@@ -1014,6 +1034,7 @@ fn cpu_boot_work(set: GameFileSet, tx: mpsc::Sender<Result<CpuBootArtifacts, Str
     }));
     match outcome {
         Ok(art) => {
+            boot_log::progress_done();
             boot_log::bootlog("cpu worker: artifacts ready");
             let _ = tx.send(Ok(art));
         }
@@ -1076,6 +1097,13 @@ impl App {
             last_setup_toast: None,
             boot_phase: BootPhase::Idle,
             boot_started: None,
+            menu: crate::menu::MenuState::new(),
+            atlas: None,
+            menu_hits: crate::menu::HitRegions::default(),
+            cursor: [0.0, 0.0],
+            in_world: false,
+            settings: crate::settings::Settings::default(),
+            quit_requested: false,
             aspect: 1.0,
             warned_no_wvp: false,
             logged_first_frame: false,
@@ -2244,6 +2272,184 @@ impl App {
     /// Spawn the CPU boot worker (block 103).  The heavy archive reads
     /// leave the main thread entirely; the GPU stages start when the
     /// artifacts arrive (see [`App::pump_boot`]).
+    /// Block 107: is the menu up right now (it owns all input)?
+    fn menu_consumes_input(&self) -> bool {
+        !self.in_world
+    }
+
+    /// Block 107: the loading screen's boot line + honest fraction.
+    fn menu_boot_info(&self) -> (String, Option<f32>) {
+        let frac = boot_log::progress_fraction();
+        let stage = boot_log::current_stage().unwrap_or_default();
+        match &self.boot_phase {
+            BootPhase::Done => ("world ready".to_string(), Some(1.0)),
+            BootPhase::Failed(e) => (format!("boot failed: {e}"), None),
+            BootPhase::Idle => ("preparing…".to_string(), None),
+            _ => (
+                format!("{stage} — {}", boot_log::progress_line()),
+                frac,
+            ),
+        }
+    }
+
+    /// Block 107: run one menu navigation step and execute the action
+    /// it hands back (the menu never touches winit/JNI itself).
+    fn menu_nav(&mut self, action: crate::menu::MenuAction) {
+        let (boot_line, _) = self.menu_boot_info();
+        let ctx = crate::menu::MenuContext {
+            boot_line: &boot_line,
+            progress: boot_log::progress_fraction(),
+            storage_denied: self.storage == StorageState::Denied,
+            files_ok: matches!(self.state, AppState::Ready(_)),
+            folder: "",
+        };
+        let a = self.menu.nav(action, &ctx);
+        match a {
+            crate::menu::MenuAction::None => {}
+            crate::menu::MenuAction::EnterWorld => self.menu_enter_world(),
+            crate::menu::MenuAction::QuitApp => self.quit_requested = true,
+            crate::menu::MenuAction::OpenStorageSettings => {
+                if let Some(ui) = self.platform.as_mut() {
+                    let _ = ui.ensure_storage();
+                }
+            }
+            crate::menu::MenuAction::RetryScan => {
+                self.state = scan_or_setup(&self.folder);
+                if let AppState::Ready(set) = &self.state {
+                    if matches!(self.boot_phase, BootPhase::Idle | BootPhase::Failed(_)) {
+                        self.spawn_boot(set.clone());
+                    }
+                }
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Block 107: enter the streamed world (Play / difficulty accept).
+    fn menu_enter_world(&mut self) {
+        if matches!(self.boot_phase, BootPhase::Done) {
+            self.menu.screen = crate::menu::MenuScreen::InGame;
+            self.in_world = true;
+            self.status_render = false;
+        } else {
+            self.menu.screen = crate::menu::MenuScreen::Loading;
+        }
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
+    }
+
+    /// Block 107: keyboard navigation (arrows/WASD, enter, esc; the
+    /// press-any-button screens take ANY key).
+    fn menu_key(&mut self, key: &winit::keyboard::Key) {
+        use winit::keyboard::{Key, NamedKey};
+        if matches!(
+            self.menu.screen,
+            crate::menu::MenuScreen::Start | crate::menu::MenuScreen::Legal
+        ) {
+            self.menu_nav(crate::menu::MenuAction::Accept);
+            return;
+        }
+        let action = match key {
+            Key::Named(NamedKey::ArrowUp) => crate::menu::MenuAction::Move(-1),
+            Key::Named(NamedKey::ArrowDown) => crate::menu::MenuAction::Move(1),
+            Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space) => {
+                crate::menu::MenuAction::Accept
+            }
+            Key::Named(NamedKey::Escape) => crate::menu::MenuAction::Back,
+            Key::Character(c) => match c.as_str() {
+                "w" | "W" => crate::menu::MenuAction::Move(-1),
+                "s" | "S" => crate::menu::MenuAction::Move(1),
+                "e" | "E" => crate::menu::MenuAction::Accept,
+                _ => crate::menu::MenuAction::None,
+            },
+            _ => crate::menu::MenuAction::None,
+        };
+        if action != crate::menu::MenuAction::None {
+            self.menu_nav(action);
+        }
+    }
+
+    /// Block 107: pointer click on the menu (row hit-testing against
+    /// the LAST drawn frame's layout; the press-any screens accept any
+    /// tap).  Android taps arrive here through the block-38 touch→mouse
+    /// mapping.
+    fn menu_click(&mut self) {
+        if self.menu_hits.any
+            || matches!(
+                self.menu.screen,
+                crate::menu::MenuScreen::Start | crate::menu::MenuScreen::Legal
+            )
+        {
+            self.menu_nav(crate::menu::MenuAction::Accept);
+            return;
+        }
+        let [x, y] = self.cursor;
+        for (row, r) in &self.menu_hits.rows {
+            if x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3] {
+                self.menu.selected = *row;
+                self.menu_nav(crate::menu::MenuAction::Accept);
+                return;
+            }
+        }
+    }
+
+    /// Block 107: build + render one menu/UI frame (the status surface).
+    /// `tint` is the phase colour used as the clear under the menu field.
+    fn draw_menu_frame(&mut self, tint: [f64; 4]) {
+        // Auto-enter: the loading screen hands to the world the moment
+        // the boot lands (the "boot directly into the game" contract).
+        if self.menu.screen == crate::menu::MenuScreen::Loading
+            && matches!(self.boot_phase, BootPhase::Done)
+        {
+            self.menu.screen = crate::menu::MenuScreen::InGame;
+            self.in_world = true;
+            self.status_render = false;
+            if let Some(w) = &self.window {
+                w.request_redraw();
+            }
+            return;
+        }
+        let Some((w, h)) = self
+            .renderer
+            .as_ref()
+            .map(|r| r.surface_size())
+        else {
+            return;
+        };
+        if self.atlas.is_none() {
+            if let Some(r) = self.renderer.as_mut() {
+                self.atlas = Some(r.init_ui());
+            }
+        }
+        let (boot_line, progress) = self.menu_boot_info();
+        let ctx = crate::menu::MenuContext {
+            boot_line: &boot_line,
+            progress,
+            storage_denied: self.storage == StorageState::Denied,
+            files_ok: matches!(self.state, AppState::Ready(_)),
+            folder: &self.folder.display().to_string(),
+        };
+        let mut list = prototype_render::UiDrawList {
+            screen: [w as f32, h as f32],
+            ..Default::default()
+        };
+        let mut hits = crate::menu::HitRegions::default();
+        {
+            let atlas = self.atlas.as_ref().expect("just built");
+            crate::menu::menu_draw(&self.menu, &ctx, atlas, &mut list, &mut hits);
+        }
+        self.menu_hits = hits;
+        if let Some(r) = self.renderer.as_mut() {
+            if let Err(e) = r.render_frame_with_ui(tint, &[], &list) {
+                log::warn!("menu frame failed: {e:?}");
+            }
+        }
+    }
+
     fn spawn_boot(&mut self, set: GameFileSet) {
         boot_log::stage("spawn cpu worker");
         self.boot_started = Some(Instant::now());
@@ -2682,8 +2888,11 @@ impl App {
             // index and is SEEDED with the members whose meshes the boot
             // actually loaded — the first frame's diff starts from the
             // boot's real state, not from zero.
+            // Block 107: the streaming budget is the DISPLAY setting's
+            // real knob (game-settings.json → the per-frame member
+            // budget the stream actually honours).
             match prototype_stream::members::MemberStreamConfig::new(
-                MEMBER_STREAM_BUDGET,
+                self.settings.stream_budget_mb as usize * 1024 * 1024,
                 MEMBER_STREAM_HYSTERESIS,
             )
             .and_then(|config| {
@@ -3026,6 +3235,12 @@ impl ApplicationHandler for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _window_id: WindowId, event: WindowEvent) {
+        // Block 107: the menu's QUIT GAME lands here — the event loop
+        // is the only place an exit is legal.
+        if self.quit_requested {
+            event_loop.exit();
+            return;
+        }
         match event {
             WindowEvent::CloseRequested => {
                 log::info!("close requested");
@@ -3055,24 +3270,20 @@ impl ApplicationHandler for App {
                         (AppState::Ready(_), BootPhase::Done) => StatusScreen::Ready,
                         _ => StatusScreen::Boot,
                     };
-                    let mut color = match status_clear_color(screen, self.storage) {
+                    let color = match status_clear_color(screen, self.storage) {
                         Some(c) => c,
                         None => return,
                     };
                     // Block 104: PULSE the booting tint — a slow breath
                     // on brightness.  A static grey is indistinguishable
                     // from a hang; the user must SEE the boot working.
-                    if matches!(screen, StatusScreen::Boot) {
-                        if let Some(t0) = self.boot_started {
-                            let k = 0.80 + 0.20 * (t0.elapsed().as_secs_f64() * 1.6).sin();
-                            color = [color[0] * k, color[1] * k, color[2] * k, 1.0];
-                        }
-                    }
-                    if let Some(r) = self.renderer.as_mut() {
-                        if let Err(e) = r.render_frame(color, &[]) {
-                            log::warn!("status frame failed: {e:?}");
-                        }
-                    }
+                    // Block 107: the status surface is the REAL menu
+                    // system now — the flat yellow/green/grey/red debug
+                    // tints are dead.  The phase tint stays as the CLEAR
+                    // colour under the menu's own field (visible on
+                    // slow devices before the first menu frame lands).
+                    let _ = screen;
+                    self.draw_menu_frame(color);
                     return;
                 }
                 // --- block 55: the audio edge's tail drain -------------
@@ -3714,8 +3925,18 @@ impl ApplicationHandler for App {
                 // deltas feed the orbit the frame loop applies.
                 match self.touch.map_all(phase, point) {
                     TouchMapped::Mouse(evs) => {
-                        for ev in evs {
-                            self.input.apply(ev);
+                        // Block 107: finger-1 taps ARE the menu clicks on
+                        // Android (the mapper synthesises mouse events).
+                        if self.menu_consumes_input() {
+                            for ev in evs {
+                                if matches!(ev, InputEvent::MouseDown(_)) {
+                                    self.menu_click();
+                                }
+                            }
+                        } else {
+                            for ev in evs {
+                                self.input.apply(ev);
+                            }
                         }
                     }
                     TouchMapped::Look { dx, dy } => self.look.drag(dx, dy),
@@ -3727,7 +3948,13 @@ impl ApplicationHandler for App {
                 if event.state == ElementState::Pressed {
                     self.skip_boot_movie();
                 }
-                if let Some(k) = map_key(&event.logical_key) {
+                // Block 107: the menu owns the keyboard whenever it is
+                // up; in-world gameplay input flows as before.
+                if self.menu_consumes_input() {
+                    if event.state == ElementState::Pressed {
+                        self.menu_key(&event.logical_key);
+                    }
+                } else if let Some(k) = map_key(&event.logical_key) {
                     let ev = match event.state {
                         ElementState::Pressed => InputEvent::KeyDown(k),
                         ElementState::Released => InputEvent::KeyUp(k),
@@ -3738,6 +3965,8 @@ impl ApplicationHandler for App {
             // Desktop-native paths (the demo-render bin exercises them;
             // Android never sends mouse events).
             WindowEvent::CursorMoved { position, .. } => {
+                // Block 107: the menu hit-tests against this.
+                self.cursor = [position.x as f32, position.y as f32];
                 let _ = self.input.apply(InputEvent::MouseMove(prototype_input::MousePosition::new(
                     position.x as f32,
                     position.y as f32,
@@ -3758,7 +3987,15 @@ impl ApplicationHandler for App {
                     ElementState::Pressed => InputEvent::MouseDown(b),
                     ElementState::Released => InputEvent::MouseUp(b),
                 };
-                self.input.apply(ev);
+                // Block 107: menu clicks (row hit-testing) — gameplay
+                // input otherwise.
+                if self.menu_consumes_input() {
+                    if state == ElementState::Pressed && b == MouseButton::Left {
+                        self.menu_click();
+                    }
+                } else {
+                    self.input.apply(ev);
+                }
             }
             _ => {}
         }

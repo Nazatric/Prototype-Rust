@@ -42,6 +42,12 @@ pub mod boot;
 // Block 103: the boot journal + panic crash-reporter (host-portable).
 pub mod boot_log;
 pub mod game_files;
+// Block 107: the REAL menu system (the engine DLL's `art\hud\*.gfx`
+// screen catalog driven natively), its asset locator (proven name
+// hashes) and the persisted settings.
+pub mod menu;
+pub mod menu_assets;
+pub mod settings;
 // Block 102: the JNI platform UI — Android-only (same gate as
 // `activity`; everything host-portable lives in `platform_ui`).
 #[cfg(feature = "android-activity")]

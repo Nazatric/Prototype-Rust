@@ -4,6 +4,58 @@ ANR fix HELD — no more 10 s death — but the boot's full index+mesh
 pass never returned on the phone, and the storage grant flow never
 fired because of a hardcoded literal.  Both fixed here).
 
+(Block 107 — THE REAL MENU SYSTEM: the user's "completely eliminate
+all placeholder screens, boot directly into the actual Prototype
+game, real in-game menu system" mandate, grounded in EVIDENCE from
+the engine DLL's own strings: the REAL menus are Scaleform GFx —
+25 `art\hud\*.gfx` screens catalogued verbatim (protostart,
+protolegalscreen, protomainmenu, protosaveload,
+protoselectdifficulty, protooptions + audio/video/controller
+variants, protocontrols, protoextras, protocredits, prototrailer,
+protostatictransition, protopopup, protohud, buttonhint, stdframe,
+stdoverlay, storage).  This block ships the SAME screen set and
+flow NATIVELY:)
+
+(1) RENDER LAYER (prototype-render::ui): a bundled-font atlas
+(DejaVu Sans Bold, free license — the honest stand-in until the real
+.gfx font/shape assets are extracted) + an ortho quad renderer
+(WGSL, alpha-blended second pass; render_frame_with_ui).  Pure-CPU
+atlas build + text layout, GPU-tested only on-device (the sandbox
+has no adapter).  3 host tests cover the atlas/layout contract.
+
+(2) MENU STATE MACHINE (prototype-android::menu): Start → Legal →
+Main (SINGLE PLAYER / OPTIONS / EXTRAS / QUIT GAME) → SaveLoad →
+Difficulty → world; Options → DISPLAY/AUDIO/CONTROLS/PLATFORM;
+Extras → CREDITS/TRAILER; QuitConfirm popup.  Each screen's title
+bar names the REAL .gfx file it mirrors.  The loader states (storage
+denied / files missing) are REAL menu screens with real actions
+(GRANT ALL-FILES ACCESS fires the settings page; RETRY SCAN re-runs
+the loader) — the red/amber placeholder screens are DEAD.  The
+loading screen shows the boot stage + an honest archive-granular
+fraction (new lock-free progress counters in boot_log, fed by the
+index pass).  Pointer input hit-tests the LAST frame's row rects
+(Android taps arrive through the block-38 touch→mouse mapping).
+
+(3) SETTINGS (prototype-android::settings): game-settings.json in
+the asset folder, fail-open to defaults; the streaming budget knob
+is WIRED to the real per-frame MemberStreamConfig (the DISPLAY
+setting changes actual engine behaviour on the next enter).
+
+(4) ASSET BRIDGE (prototype-android::menu_assets): every real .gfx
+screen's member id computed with the PROVEN hash_name; the worker
+census (next device run) journals which real screens exist in the
+user's corpus — the extraction path is open.
+
+(5) APP INTEGRATION: the menu owns keyboard (arrows/WASD, enter, esc)
+and pointer whenever the world is not up; QUIT GAME exits via the
+event loop; EnterWorld parks on the loading screen and auto-enters
+the world the moment the boot lands ("boot directly into the game").
+
+883/0 workspace; aarch64 android-activity gate CLEAN (0 warnings).
+NEXT-UP: block 108 (in-world movement: touch stick + drag-look /
+WASD+mouse), then 109 (Windows exe in CI), then the .gfx SWF
+extraction (the census data from the next device run decides).
+
 (Block 106 — LANDSCAPE LOCK + IMMERSIVE FULLSCREEN + SCREEN-ON (the
 user's explicit UI asks).  (1) Manifest (cargo-apk metadata, verified
 against ndk-build 0.10's AndroidManifest schema — Activity.orientation

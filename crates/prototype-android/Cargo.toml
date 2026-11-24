@@ -26,6 +26,9 @@ prototype-video   = { workspace = true }
 prototype-audio   = { workspace = true }
 thiserror         = { workspace = true }
 log               = "0.4"
+# Block 107: the menu system + persisted settings (game-settings.json).
+serde             = { workspace = true }
+serde_json        = { workspace = true }
 
 # All-target optional deps for the shared winit App handler (`app.rs`,
 # feature `winit-app`).  On desktop the x11/wayland backends apply; on
