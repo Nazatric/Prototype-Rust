@@ -157,6 +157,51 @@ jobs:
           path: ${{ steps.apk.outputs.path }}
           if-no-files-found: ignore
 
+  # Block 109: the WINDOWS target — the same winit app, built for
+  # x86_64-pc-windows-gnu on the Linux runner (mingw-w64) and uploaded
+  # to the same ci-apks release.  The platform layers stay isolated:
+  # the android-activity feature stays OFF (winit-app only), exactly
+  # like the desktop demo cell.
+  build-windows:
+    name: Windows (x86_64-gnu)
+    runs-on: ubuntu-latest
+    needs: test-linux
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-gnu
+
+      - name: Install mingw-w64 (the gnu linker)
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64
+
+      - name: Build the desktop game (demo-render, winit-app)
+        run: |
+          cargo build -p prototype-demo --features winit-app             --target x86_64-pc-windows-gnu
+          BIN=$(find target/x86_64-pc-windows-gnu -maxdepth 2 -name '*.exe' | head -n1)
+          if [ -z "$BIN" ]; then echo "no exe produced" >&2; exit 1; fi
+          NAMED="prototype-rs-debug-x86_64-pc-windows-gnu.exe"
+          cp "$BIN" "$NAMED"
+
+      - name: Upload exe to ci-apks release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload ci-apks "prototype-rs-debug-x86_64-pc-windows-gnu.exe" --clobber --repo "$GITHUB_REPOSITORY"
+
+      - name: Upload exe artifact (best effort)
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: prototype-rs-debug-x86_64-pc-windows-gnu
+          path: prototype-rs-debug-x86_64-pc-windows-gnu.exe
+          if-no-files-found: ignore
+
   # Placeholder so the pipeline shape is visible from day one; flips on
   # after the per-ABI matrix proves green (merging fat APK by hand or via
   # apkanalyzer is then mechanical).
