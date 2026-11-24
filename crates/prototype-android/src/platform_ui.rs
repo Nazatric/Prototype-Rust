@@ -64,6 +64,13 @@ pub trait PlatformUi {
 
     /// Show a short transient message (toast on Android; log elsewhere).
     fn toast(&self, message: &str);
+
+    /// Block 106: apply the game's window presentation — landscape is
+    /// locked in the manifest; this hides the system bars (immersive
+    /// fullscreen) and keeps the screen awake.  Cheap + idempotent:
+    /// called on every resume so the bars stay hidden after the user
+    /// returns from Settings (or any other system UI).
+    fn apply_window_presentation(&self);
 }
 
 /// Which system UI grants storage at a given API level.
@@ -135,6 +142,11 @@ impl PlatformUi for LogOnlyUi {
 
     fn toast(&self, message: &str) {
         log::info!("platform ui toast: {message}");
+    }
+
+    fn apply_window_presentation(&self) {
+        // The desktop window is winit's business (the menu block adds
+        // a real fullscreen toggle on PC); nothing to hide here.
     }
 }
 

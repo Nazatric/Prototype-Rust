@@ -2962,6 +2962,12 @@ impl App {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        // Block 106: window presentation BEFORE anything else — the
+        // bars hide on every resume (returning from Settings or any
+        // system UI re-applies them for free).
+        if let Some(ui) = self.platform.as_ref() {
+            ui.apply_window_presentation();
+        }
         // Block 102: storage access FIRST — the scan below (and the
         // loader's folder creation) is useless without it on Android 8+.
         self.storage = match self.platform.as_mut() {

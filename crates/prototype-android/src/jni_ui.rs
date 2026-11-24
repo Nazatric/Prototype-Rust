@@ -291,6 +291,111 @@ impl AndroidUi {
 }
 
 impl PlatformUi for AndroidUi {
+    /// Block 106: immersive fullscreen + screen-on, applied on EVERY
+    /// resume (returning from Settings or a system dialog re-applies
+    /// it — the bars never come back permanently).  Landscape itself is
+    /// locked in the manifest (`sensorLandscape`); this hides both
+    /// system bars and keeps the display awake during play.
+    fn apply_window_presentation(&self) {
+        let app = self.app.clone();
+        self.app.run_on_java_main_thread(Box::new(move || {
+            // SAFETY: the app's JavaVM pointer (docs' pattern).
+            let jvm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr() as _) };
+            if let Err(err) = jvm.attach_current_thread(|env| -> jni::errors::Result<()> {
+                let activity: jni::sys::jobject = app.activity_as_ptr() as _;
+                // SAFETY: borrows the unowned global (docs' pattern).
+                let activity = unsafe { env.as_cast_raw::<Global<Activity>>(&activity)? };
+                let window = env
+                    .call_method(
+                        activity.as_ref(),
+                        jni_str!("getWindow"),
+                        jni_sig!("()Landroid/view/Window;"),
+                        &[],
+                    )?
+                    .l()?;
+                // FLAG_KEEP_SCREEN_ON (0x80) — a streamed open world must
+                // not let the display sleep mid-play.
+                env.call_method(
+                    &window,
+                    jni_str!("addFlags"),
+                    jni_sig!("(I)V"),
+                    &[JValue::Int(0x80)],
+                )?;
+                if AndroidApp::sdk_version() >= 30 {
+                    // API 30+: the insets controller hides BOTH bars and
+                    // lets a swipe reveal them transiently.
+                    env.call_method(
+                        &window,
+                        jni_str!("setDecorFitsSystemWindows"),
+                        jni_sig!("(Z)V"),
+                        &[JValue::Bool(false)],
+                    )?;
+                    let controller = env
+                        .call_method(
+                            &window,
+                            jni_str!("getInsetsController"),
+                            jni_sig!("()Landroid/view/WindowInsetsController;"),
+                            &[],
+                        )?
+                        .l()?;
+                    let wi_type =
+                        env.find_class(jni_str!("android/view/WindowInsets$Type"))?;
+                    let sb = env
+                        .call_static_method(
+                            &wi_type,
+                            jni_str!("statusBars"),
+                            jni_sig!("()I"),
+                            &[],
+                        )?
+                        .i()?;
+                    let nb = env
+                        .call_static_method(
+                            &wi_type,
+                            jni_str!("navigationBars"),
+                            jni_sig!("()I"),
+                            &[],
+                        )?
+                        .i()?;
+                    env.call_method(
+                        &controller,
+                        jni_str!("hide"),
+                        jni_sig!("(I)V"),
+                        &[JValue::Int(sb | nb)],
+                    )?;
+                    // BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE (= 2).
+                    env.call_method(
+                        &controller,
+                        jni_str!("setSystemBarsBehavior"),
+                        jni_sig!("(I)V"),
+                        &[JValue::Int(2)],
+                    )?;
+                } else {
+                    // API 26-29: the classic immersive-sticky flags.
+                    // HIDE_NAVIGATION(0x2) | FULLSCREEN(0x4) |
+                    // LAYOUT_STABLE(0x100) | LAYOUT_HIDE_NAVIGATION(0x200)
+                    // | LAYOUT_FULLSCREEN(0x400) | IMMERSIVE_STICKY(0x1000)
+                    let decor = env
+                        .call_method(
+                            &window,
+                            jni_str!("getDecorView"),
+                            jni_sig!("()Landroid/view/View;"),
+                            &[],
+                        )?
+                        .l()?;
+                    env.call_method(
+                        &decor,
+                        jni_str!("setSystemUiVisibility"),
+                        jni_sig!("(I)V"),
+                        &[JValue::Int(0x2 | 0x4 | 0x100 | 0x200 | 0x400 | 0x1000)],
+                    )?;
+                }
+                Ok(())
+            }) {
+                log::warn!("platform ui: immersive window failed (non-fatal): {err:?}");
+            }
+        }));
+    }
+
     fn ensure_storage(&mut self) -> StorageState {
         let api = AndroidApp::sdk_version();
         // Block 104 FIX (the user's yellow screen): block 103 shipped a

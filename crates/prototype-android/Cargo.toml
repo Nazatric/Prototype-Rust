@@ -106,9 +106,18 @@ target_sdk_version = 34
 
 [package.metadata.android.application]
 label = "Prototype Rust"
+# Block 106: the fullscreen theme kills the title bar + status bar at
+# the window level; the JNI path in jni_ui (apply_window_presentation)
+# hides the NAVIGATION bar too (immersive) on every resume.
+theme = "@android:style/Theme.NoTitleBar.Fullscreen"
 
 [package.metadata.android.application.activity]
 name = "android.app.NativeActivity"
+# Block 106: LANDSCAPE LOCK — the game is a landscape experience (the
+# real Prototype runs its menus and HUD in landscape); portrait is not
+# a supported shape.  sensorLandscape = either landscape side is fine,
+# portrait never happens.
+orientation = "sensorLandscape"
 
 # Block 102: the loader needs to READ THE USER'S OWN game files on the
 # shared storage.  Android 11+ (API 30+): all-files access — the app

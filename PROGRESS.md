@@ -4,6 +4,22 @@ ANR fix HELD — no more 10 s death — but the boot's full index+mesh
 pass never returned on the phone, and the storage grant flow never
 fired because of a hardcoded literal.  Both fixed here).
 
+(Block 106 — LANDSCAPE LOCK + IMMERSIVE FULLSCREEN + SCREEN-ON (the
+user's explicit UI asks).  (1) Manifest (cargo-apk metadata, verified
+against ndk-build 0.10's AndroidManifest schema — Activity.orientation
+exists): `activity.orientation = "sensorLandscape"` — either landscape
+side, portrait never happens; `application.theme = Theme.NoTitleBar.
+Fullscreen` kills the title + status bar at the window level.
+(2) JNI immersive (jni_ui::apply_window_presentation, new PlatformUi
+trait method, called FIRST on every resume so returning from Settings
+re-applies it): FLAG_KEEP_SCREEN_ON always; API 30+:
+setDecorFitsSystemWindows(false) + WindowInsetsController.hide
+(statusBars|navigationBars) + BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE;
+API 26-29: the classic immersive-sticky system-ui flag set.  Host
+(LogOnlyUi): no-op — the desktop window is winit's business (the
+menu block adds a real fullscreen toggle on PC).  Best-effort by
+contract like every JNI path.
+
 (Block 105 — THE USER WENT TO SLEEP FOR 8 HOURS WITH A MANDATE:
 "the game must actually boot and render" + real menus + landscape +
 fullscreen + movement + Windows target + VERIFY AGAINST THE REAL
