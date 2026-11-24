@@ -69,6 +69,9 @@ pub enum MenuScreen {
     Credits,
     /// `protopopup` — quit / back-to-menu confirmation.
     QuitConfirm,
+    /// `protopopup` — the IN-WORLD pause (ESC/back): resume, main
+    /// menu, quit.
+    Pause,
     /// `protostatictransition` — the loading screen (boot progress).
     Loading,
     /// `protohud` — in-game (the world draws; pause via Back).
@@ -163,6 +166,11 @@ impl MenuState {
             MenuScreen::Extras => vec!["CREDITS".to_string(), "TRAILER".to_string()],
             MenuScreen::Credits => vec!["BACK".to_string()],
             MenuScreen::QuitConfirm => vec!["QUIT TO DESKTOP".to_string(), "CANCEL".to_string()],
+            MenuScreen::Pause => vec![
+                "RESUME".to_string(),
+                "MAIN MENU".to_string(),
+                "QUIT GAME".to_string(),
+            ],
             MenuScreen::Loading => vec![],
             MenuScreen::InGame => vec![],
         }
@@ -285,6 +293,15 @@ impl MenuState {
                     MenuAction::None
                 }
             }
+            MenuScreen::Pause => match self.selected {
+                0 => MenuAction::EnterWorld, // RESUME (EnterWorld = back to the world)
+                1 => {
+                    self.screen = MenuScreen::Main;
+                    self.selected = 0;
+                    MenuAction::ExitWorld
+                }
+                _ => MenuAction::QuitApp,
+            },
             _ => MenuAction::None,
         }
     }
@@ -292,7 +309,13 @@ impl MenuState {
     fn back(&mut self, _ctx: &MenuContext) -> MenuAction {
         match self.screen {
             MenuScreen::Main => MenuAction::QuitApp, // ESC on main = quit (real game behaviour)
-            MenuScreen::InGame => MenuAction::None,  // pause opens in block 108
+            MenuScreen::InGame => {
+                // Block 110: ESC in the world opens the pause popup.
+                self.screen = MenuScreen::Pause;
+                self.selected = 0;
+                MenuAction::None
+            }
+            MenuScreen::Pause => MenuAction::EnterWorld, // ESC on pause = resume
             MenuScreen::Options | MenuScreen::Extras | MenuScreen::QuitConfirm => {
                 self.screen = MenuScreen::Main;
                 self.selected = 0;
@@ -467,6 +490,7 @@ fn screen_gfx(s: MenuScreen) -> &'static str {
         MenuScreen::Extras => "protoextras.gfx",
         MenuScreen::Credits => "protocredits.gfx",
         MenuScreen::QuitConfirm => "protopopup.gfx",
+        MenuScreen::Pause => "protopopup.gfx",
         MenuScreen::Loading => "protostatictransition.gfx",
         MenuScreen::InGame => "protohud.gfx",
     }
@@ -576,5 +600,39 @@ mod tests {
         assert!(REAL_SCREENS.contains(&"art\\hud\\protooptions.gfx"));
         assert!(REAL_SCREENS.contains(&"art\\hud\\protohud.gfx"));
         assert_eq!(REAL_SCREENS.len(), 25);
+    }
+}
+
+#[cfg(test)]
+mod pause_tests {
+    use super::*;
+
+    /// Block 110: ESC in the world opens the pause popup; RESUME goes
+    /// back; MAIN MENU exits to the menu surface; QUIT quits.
+    #[test]
+    fn in_world_pause_round_trip() {
+        let ctx = MenuContext {
+            boot_line: "world ready",
+            progress: Some(1.0),
+            storage_denied: false,
+            files_ok: true,
+            folder: "/game",
+        };
+        let mut m = MenuState { screen: MenuScreen::InGame, selected: 0 };
+        m.nav(MenuAction::Back, &ctx);
+        assert_eq!(m.screen, MenuScreen::Pause);
+        assert_eq!(m.rows(&ctx), vec!["RESUME", "MAIN MENU", "QUIT GAME"]);
+        // ESC on pause = resume.
+        let a = m.nav(MenuAction::Back, &ctx);
+        assert_eq!(a, MenuAction::EnterWorld);
+        // Pause → MAIN MENU.
+        m.nav(MenuAction::Move(1), &ctx);
+        let a = m.nav(MenuAction::Accept, &ctx);
+        assert_eq!(a, MenuAction::ExitWorld);
+        assert_eq!(m.screen, MenuScreen::Main);
+        // Pause → QUIT GAME.
+        m.screen = MenuScreen::Pause;
+        m.selected = 2;
+        assert_eq!(m.nav(MenuAction::Accept, &ctx), MenuAction::QuitApp);
     }
 }

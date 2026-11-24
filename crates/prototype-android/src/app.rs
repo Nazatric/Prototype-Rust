@@ -2406,6 +2406,16 @@ impl App {
         match a {
             crate::menu::MenuAction::None => {}
             crate::menu::MenuAction::EnterWorld => self.menu_enter_world(),
+            crate::menu::MenuAction::ExitWorld => {
+                // Block 110: pause's MAIN MENU — the menu surface takes
+                // over (in_world is already false; the boot stays Done).
+                self.menu.screen = crate::menu::MenuScreen::Main;
+                self.selected_reset();
+                self.status_render = true;
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+            }
             crate::menu::MenuAction::QuitApp => self.quit_requested = true,
             crate::menu::MenuAction::OpenStorageSettings => {
                 if let Some(ui) = self.platform.as_mut() {
@@ -2425,6 +2435,11 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Block 110: reset the menu selection for a fresh screen.
+    fn selected_reset(&mut self) {
+        self.menu.selected = 0;
     }
 
     /// Block 107: enter the streamed world (Play / difficulty accept).

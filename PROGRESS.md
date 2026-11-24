@@ -4,6 +4,14 @@ ANR fix HELD — no more 10 s death — but the boot's full index+mesh
 pass never returned on the phone, and the storage grant flow never
 fired because of a hardcoded literal.  Both fixed here).
 
+(Block 110 — THE PAUSE POPUP (the last UX hole: ESC in the world did
+nothing — the player was trapped until the app switcher).  Block 110
+adds the real `protopopup` pause: ESC/back in-world opens
+RESUME / MAIN MENU / QUIT GAME; ESC on the popup resumes; MAIN MENU
+exits to the menu surface (the boot stays Done — re-entering is
+instant); QUIT GAME exits the app.  Round-trip test pins the flow.
+179/0 with winit-app; aarch64 gate clean.)
+
 (Block 108 — PLAYABLE MOVEMENT (the MVP's last piece).  The player
 machinery was already built (update_player: camera-relative WASD walk
 + arrow-key yaw + snap-to-face, LookControl drag-orbit, camera-follow)
