@@ -650,6 +650,51 @@ impl Renderer {
         self.encode_frame(clear, batches.iter().copied())
     }
 
+    /// Block 108: the SELECTED world frame + the UI overlay (the
+    /// stick/menu layer) — the selected path's render_frame_with_ui.
+    pub fn render_frame_selected_with_ui(
+        &mut self,
+        clear: [f64; 4],
+        batches: &[&DebugDrawBatch],
+        list: &crate::ui::UiDrawList,
+    ) -> Result<(), wgpu::SurfaceError> {
+        let Some(ui) = self.ui.as_mut() else {
+            return self.encode_frame(clear, batches.iter().copied());
+        };
+        ui.upload(&self.device, &self.queue, list);
+        self.encode_frame(clear, batches.iter().copied())?;
+        let frame = self.surface.get_current_texture()?;
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("prototype-rs ui frame"),
+            });
+        let ui = self.ui.as_ref().expect("checked above");
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("prototype-rs ui pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            ui.draw(&mut pass, list);
+        }
+        self.queue.submit(Some(encoder.finish()));
+        frame.present();
+        Ok(())
+    }
+
     /// The shared encode sequence (pipeline → groups → bindings →
     /// draw_indexed per batch) behind both frame entries.
     fn encode_frame<'b, I>(&mut self, clear: [f64; 4], batches: I) -> Result<(), wgpu::SurfaceError>

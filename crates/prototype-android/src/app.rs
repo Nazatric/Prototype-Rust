@@ -378,6 +378,99 @@ fn build_mesh_batches(
 /// Idle/Move state and snaps the player to face the movement direction
 /// (DESIGN instant snap; the original's smoothed turn is not
 /// recovered).  Returns the applied displacement.
+/// Block 108: the Android virtual move stick.  The left 45% of the
+/// screen (in-world) is the walk zone; a finger drag there drives the
+/// SAME [`InputState`] key set WASD does — the frame path's
+/// [`update_player`] is untouched, and one code path walks on both
+/// platforms.  Key reconcile happens per frame (KeyDown for newly
+/// desired keys, KeyUp for released ones) against the shared InputState.
+/// Android-only in practice (no touch, no stick) — documented honestly:
+/// a physical key held while the stick releases the same code loses the
+/// race; irrelevant on a phone.
+struct VirtualStick {
+    /// The capturing finger: (id, origin px, current px).
+    active: Option<(u32, [f32; 2], [f32; 2])>,
+    /// The normalized drag vector (-1..1; UP is forward).
+    vector: [f32; 2],
+    /// The key set currently held on the stick's behalf.
+    held: std::collections::BTreeSet<prototype_input::KeyCode>,
+}
+
+impl VirtualStick {
+    /// Stick travel radius in px (the drag distance that reads full).
+    const RADIUS: f32 = 90.0;
+    /// Below this magnitude the stick is neutral (thumb rest).
+    const DEAD: f32 = 0.18;
+
+    fn new() -> Self {
+        Self { active: None, vector: [0.0, 0.0], held: Default::default() }
+    }
+
+    fn begin(&mut self, id: u32, x: f32, y: f32) {
+        self.active = Some((id, [x, y], [x, y]));
+    }
+
+    fn move_to(&mut self, id: u32, x: f32, y: f32) {
+        if let Some((fid, origin, cur)) = &mut self.active {
+            if *fid == id {
+                *cur = [x, y];
+                let dx = (x - origin[0]) / Self::RADIUS;
+                let dy = (y - origin[1]) / Self::RADIUS;
+                let len = (dx * dx + dy * dy).sqrt();
+                self.vector = if len > 1.0 { [dx / len, dy / len] } else { [dx, dy] };
+            }
+        }
+    }
+
+    fn end(&mut self, id: u32) {
+        if let Some((fid, _, _)) = self.active {
+            if fid == id {
+                self.active = None;
+                self.vector = [0.0, 0.0];
+            }
+        }
+    }
+
+    fn is_capturing(&self, id: u32) -> bool {
+        self.active.as_ref().map(|(fid, _, _)| *fid) == Some(id)
+    }
+
+    /// The desired key set from the drag vector (with the dead zone).
+    fn desired_keys(&self) -> std::collections::BTreeSet<prototype_input::KeyCode> {
+        use prototype_input::KeyCode;
+        let mut set = std::collections::BTreeSet::new();
+        let [vx, vy] = self.vector;
+        let len = (vx * vx + vy * vy).sqrt();
+        if len >= Self::DEAD {
+            if vy < -Self::DEAD {
+                set.insert(KeyCode::W);
+            }
+            if vy > Self::DEAD {
+                set.insert(KeyCode::S);
+            }
+            if vx < -Self::DEAD {
+                set.insert(KeyCode::A);
+            }
+            if vx > Self::DEAD {
+                set.insert(KeyCode::D);
+            }
+        }
+        set
+    }
+
+    /// Per-frame reconcile against the shared InputState.
+    fn apply(&mut self, input: &mut InputState) {
+        let want = self.desired_keys();
+        for k in want.difference(&self.held).copied().collect::<Vec<_>>() {
+            input.apply(InputEvent::KeyDown(k));
+        }
+        for k in self.held.difference(&want).copied().collect::<Vec<_>>() {
+            input.apply(InputEvent::KeyUp(k));
+        }
+        self.held = want;
+    }
+}
+
 fn update_player(player: &mut Player, input: &InputState, follow: &CameraFollow, dt: f32) -> Vec3 {
     let mut turn = 0.0f32;
     if input.is_key_down(KeyCode::Left) {
@@ -573,6 +666,10 @@ pub struct App {
     settings: crate::settings::Settings,
     /// Block 107: quit requested by the menu (executed in window_event).
     quit_requested: bool,
+    /// Block 108: the Android virtual walk stick.
+    stick: VirtualStick,
+    /// Block 108: the surface size in px (the stick zone + UI layout).
+    screen_px: [f32; 2],
     /// Surface aspect ratio (updated on resize + boot).
     aspect: f32,
     /// Logged-once flag: the pipeline lacks the WVP uniform (rows 0 —
@@ -1104,6 +1201,8 @@ impl App {
             in_world: false,
             settings: crate::settings::Settings::default(),
             quit_requested: false,
+            stick: VirtualStick::new(),
+            screen_px: [1280.0, 720.0],
             aspect: 1.0,
             warned_no_wvp: false,
             logged_first_frame: false,
@@ -3253,6 +3352,8 @@ impl ApplicationHandler for App {
                 if size.height > 0 {
                     self.aspect = size.width as f32 / size.height as f32;
                 }
+                // Block 108: the stick zone + UI layout basis.
+                self.screen_px = [size.width as f32, size.height as f32];
             }
             WindowEvent::RedrawRequested => {
                 // Block 102: the Setup status frame — clear-only, the
@@ -3481,6 +3582,9 @@ impl ApplicationHandler for App {
                     //    the follow first, and the walk is CAMERA-
                     //    relative (the touch look's movement half).
                     self.look.apply_to(&mut self.follow);
+                    // Block 108: the stick's key reconcile feeds the
+                    // SAME InputState the keyboard does.
+                    self.stick.apply(&mut self.input);
                     update_player(&mut self.player, &self.input, &self.follow, dt);
                     let cam = frame_camera(&self.follow, &self.player, self.aspect);
                     let player_pos = self.player.position();
@@ -3857,7 +3961,14 @@ impl ApplicationHandler for App {
                         self.logged_first_frame = true;
                     }
 
-                    let frame = r.render_frame_selected(CLEAR, &picked);
+                    // Block 108: the world frame + the stick overlay
+                    // (one UI pass; an empty list = no overlay cost).
+                    let ui = stick_overlay(self.screen_px, self.in_world, self.stick.active);
+                    let frame = if ui.verts.is_empty() {
+                        r.render_frame_selected(CLEAR, &picked)
+                    } else {
+                        r.render_frame_selected_with_ui(CLEAR, &picked, &ui)
+                    };
                     if let Err(e) = frame {
                         // Timeout is routine under load; Lost/Outdated mean
                         // the surface died — rebuild on the next resume.
@@ -3920,6 +4031,30 @@ impl ApplicationHandler for App {
                 // 2^32 — the OS reuses small ids for fingers, so this is
                 // safe in practice; documented simplification).
                 let point = TouchPoint::new(t.id as u32, t.location.x as f32, t.location.y as f32);
+                // Block 108: the walk zone — a finger STARTING in the
+                // left 45% of the screen (in-world) captures the stick;
+                // that finger never reaches the block-38 mapping.  Menu
+                // time keeps the mapper untouched (taps = clicks).
+                if self.in_world && !matches!(self.state, AppState::Setup { .. }) {
+                    let in_zone = t.phase == WinitTouchPhase::Started
+                        && (t.location.x as f32) < self.screen_px[0] * 0.45;
+                    if in_zone {
+                        self.stick.begin(t.id as u32, t.location.x as f32, t.location.y as f32);
+                        return;
+                    }
+                    if self.stick.is_capturing(t.id as u32) {
+                        match t.phase {
+                            WinitTouchPhase::Moved => {
+                                self.stick.move_to(t.id as u32, t.location.x as f32, t.location.y as f32);
+                            }
+                            WinitTouchPhase::Ended | WinitTouchPhase::Cancelled => {
+                                self.stick.end(t.id as u32);
+                            }
+                            _ => {}
+                        }
+                        return;
+                    }
+                }
                 // Block 38: finger 1 = mouse (the pre-38 contract), a
                 // concurrent finger 2 = the camera look — its pixel
                 // deltas feed the orbit the frame loop applies.
@@ -3939,7 +4074,11 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
-                    TouchMapped::Look { dx, dy } => self.look.drag(dx, dy),
+                    TouchMapped::Look { dx, dy } => {
+                        // Block 107: the CONTROLS setting is a real knob.
+                        let s = self.settings.look_sensitivity;
+                        self.look.drag(dx * s, dy * s);
+                    }
                     TouchMapped::Ignored => {}
                 }
             }
@@ -5952,5 +6091,112 @@ mod tests {
         );
         assert_eq!(app.music_unit_tag, tag, "the music unit is tracked");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Block 108: the on-screen stick overlay — a rest-position ring hint
+/// (bottom-left) always visible in-world, plus the live ring + knob
+/// while a finger drives the stick.  Pure layout (no GPU here); takes
+/// explicit fields because the world draw holds the renderer borrow.
+fn stick_overlay(
+    screen_px: [f32; 2],
+    in_world: bool,
+    active: Option<(u32, [f32; 2], [f32; 2])>,
+) -> prototype_render::UiDrawList {
+    let mut list = prototype_render::UiDrawList {
+        screen: screen_px,
+        ..Default::default()
+    };
+    if !in_world {
+        return list;
+    }
+    let [w, h] = screen_px;
+    let rest = [w * 0.20, h * 0.72];
+    let ring = 96.0f32;
+    // The rest-position hint ring (dim, dashed by gaps).
+    for i in 0..24 {
+        if i % 2 == 1 {
+            continue;
+        }
+        let a = (i as f32) / 24.0 * std::f32::consts::TAU;
+        let x = rest[0] + a.cos() * ring;
+        let y = rest[1] + a.sin() * ring;
+        list.rect(x - 4.0, y - 4.0, 8.0, 8.0, [0.6, 0.6, 0.6, 0.35]);
+    }
+    // The live stick: origin ring + knob at the clamped drag position.
+    if let Some((_, origin, cur)) = active {
+        for i in 0..24 {
+            let a = (i as f32) / 24.0 * std::f32::consts::TAU;
+            let x = origin[0] + a.cos() * ring;
+            let y = origin[1] + a.sin() * ring;
+            list.rect(x - 5.0, y - 5.0, 10.0, 10.0, [0.9, 0.9, 0.9, 0.8]);
+        }
+        let dx = (cur[0] - origin[0]).clamp(-ring, ring);
+        let dy = (cur[1] - origin[1]).clamp(-ring, ring);
+        list.rect(origin[0] + dx - 18.0, origin[1] + dy - 18.0, 36.0, 36.0, [0.55, 0.12, 0.10, 0.9]);
+    }
+    list
+}
+
+#[cfg(test)]
+mod stick_tests {
+    use super::*;
+
+    /// Block 108: the stick's key mapping — dead zone neutral, up =
+    /// forward (W), diagonals combine, release clears everything.
+    #[test]
+    fn stick_maps_the_walk_zone_to_wasd() {
+        use prototype_input::KeyCode;
+        let mut s = VirtualStick::new();
+        s.begin(1, 100.0, 100.0);
+        // Dead zone: barely moved.
+        s.move_to(1, 105.0, 102.0);
+        assert!(s.desired_keys().is_empty());
+        // Up = forward.
+        s.move_to(1, 100.0, 100.0 - 60.0);
+        assert_eq!(s.desired_keys(), std::iter::once(KeyCode::W).collect());
+        // Diagonal up-right.
+        s.move_to(1, 100.0 + 55.0, 100.0 - 55.0);
+        let want: std::collections::BTreeSet<_> = [KeyCode::W, KeyCode::D].into_iter().collect();
+        assert_eq!(s.desired_keys(), want);
+        // Left.
+        s.move_to(1, 100.0 - 70.0, 100.0);
+        assert_eq!(s.desired_keys(), std::iter::once(KeyCode::A).collect());
+        // Release clears.
+        s.end(1);
+        assert!(s.desired_keys().is_empty());
+        assert!(s.active.is_none());
+    }
+
+    /// A different finger id never moves or releases the capture.
+    #[test]
+    fn stick_ignores_other_fingers() {
+        use prototype_input::KeyCode;
+        let mut s = VirtualStick::new();
+        s.begin(7, 100.0, 100.0);
+        s.move_to(9, 500.0, 500.0);
+        assert_eq!(s.vector, [0.0, 0.0]);
+        s.end(9);
+        s.move_to(7, 100.0, 100.0 - 80.0);
+        assert_eq!(s.desired_keys(), std::iter::once(KeyCode::W).collect());
+    }
+
+    /// The reconcile emits KeyDown only on newly-desired keys (the
+    /// second apply with the same vector is a no-op).
+    #[test]
+    fn reconcile_is_edge_triggered() {
+        let mut s = VirtualStick::new();
+        s.begin(1, 0.0, 0.0);
+        s.move_to(1, 0.0, -70.0);
+        let mut input = InputState::new();
+        s.apply(&mut input);
+        assert!(input.is_key_down(prototype_input::KeyCode::W));
+        // Same vector again: the held set matches, no events fire.
+        s.apply(&mut input);
+        assert!(input.is_key_down(prototype_input::KeyCode::W));
+        // Release.
+        s.end(1);
+        s.apply(&mut input);
+        assert!(!input.is_key_down(prototype_input::KeyCode::W));
     }
 }

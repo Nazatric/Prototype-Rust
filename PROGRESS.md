@@ -4,6 +4,25 @@ ANR fix HELD — no more 10 s death — but the boot's full index+mesh
 pass never returned on the phone, and the storage grant flow never
 fired because of a hardcoded literal.  Both fixed here).
 
+(Block 108 — PLAYABLE MOVEMENT (the MVP's last piece).  The player
+machinery was already built (update_player: camera-relative WASD walk
++ arrow-key yaw + snap-to-face, LookControl drag-orbit, camera-follow)
+— what was MISSING was Android's hands: touch had no WALK input.  This
+block adds the virtual walk stick: the left 45% of the screen (in-
+world) captures a finger; its drag drives the SAME InputState key set
+WASD does (VirtualStick: normalized vector, 0.18 dead zone, edge-
+triggered KeyDown/KeyUp reconcile per frame) — ONE walk path on both
+platforms, update_player untouched and pinned by tests (mapping,
+foreign-finger immunity, edge-triggered reconcile).  The stick draws
+over the world through the new render_frame_selected_with_ui (the
+selected world frame + one alpha-blended UI pass): a rest-position
+ring hint bottom-left, the live ring + clamped knob while steering.
+The CONTROLS setting (look_sensitivity) is now a real knob feeding
+LookControl; the stick zone + UI layout track the surface size.
+Host-verified: 178/0 with the winit-app feature (+3 boot
+integration); aarch64 gate clean.  The playable MVP is COMPLETE:
+boot → menu → play → walk the streamed world on touch or WASD.
+
 (Block 107 — THE REAL MENU SYSTEM: the user's "completely eliminate
 all placeholder screens, boot directly into the actual Prototype
 game, real in-game menu system" mandate, grounded in EVIDENCE from
