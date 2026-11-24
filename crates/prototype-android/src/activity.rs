@@ -79,6 +79,9 @@ pub fn android_main(app: AndroidApp) {
     }
 
     let mut app_h = App::with_state(folder.clone(), state);
+    // Block 102: the JNI platform UI (toasts + the storage grant flow).
+    // Clone the app handle BEFORE winit's builder consumes it.
+    app_h.set_platform_ui(Box::new(crate::jni_ui::AndroidUi::new(app.clone())));
     let event_loop: EventLoop<()> = EventLoop::with_user_event()
         .with_android_app(app)
         .build()

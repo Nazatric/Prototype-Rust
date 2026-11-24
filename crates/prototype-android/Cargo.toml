@@ -49,6 +49,10 @@ cpal              = { version = "0.18", optional = true, default-features = fals
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity   = { version = "0.6", features = ["native-activity"], optional = true }
 android_logger     = { version = "0.14" }
+# Block 102: the storage grant flow + toasts (jni_ui).  Version MUST
+# stay 0.22 — android-activity 0.6 is built against jni 0.22.x and the
+# JNIEnv types must unify to one crate version.
+jni                = "0.22"
 winit              = { version = "0.30", optional = true, default-features = false, features = ["rwh_06", "android-native-activity"] }
 
 [features]
@@ -105,3 +109,15 @@ label = "Prototype Rust"
 
 [package.metadata.android.application.activity]
 name = "android.app.NativeActivity"
+
+# Block 102: the loader needs to READ THE USER'S OWN game files on the
+# shared storage.  Android 11+ (API 30+): all-files access — the app
+# opens the settings page on first launch (jni_ui).  Android 8-10
+# (API 26-29): the classic runtime dialog; the manifest cap keeps the
+# (harmless but scary) media grant off Android 11+ prompt lists.
+[[package.metadata.android.uses_permission]]
+name = "android.permission.MANAGE_EXTERNAL_STORAGE"
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.WRITE_EXTERNAL_STORAGE"
+max_sdk_version = 29

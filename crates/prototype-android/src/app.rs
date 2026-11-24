@@ -92,6 +92,10 @@ use crate::movie::{find_boot_movie, MoviePlayerState};
 #[cfg(feature = "audio-cpal")]
 use crate::movie::MovieAudioEdge;
 use crate::touch::{TouchMapper, TouchMapped, TouchPhase, TouchPoint};
+// Block 102: the platform UI services — storage grant flow, toasts and
+// the Setup status colours (see the module's docs for the black-screen
+// story that motivated it).
+use crate::platform_ui::{status_clear_color, PlatformUi, StatusScreen, StorageState};
 // Block 57: the GAMEPLAY audio DEVICE edge — the persistent-lifetime
 // counterpart of the movie edge, opened over the AudioOut ring.
 #[cfg(feature = "audio-cpal")]
@@ -527,6 +531,18 @@ pub struct App {
     /// Last frame's instant (delta-time source; None until the first
     /// frame — the first update applies dt = 0).
     last_frame: Option<Instant>,
+    /// Block 102: the platform UI (Android: JNI toasts + the storage
+    /// grant flow; `None` on the desktop demo and in most tests).
+    platform: Option<Box<dyn PlatformUi>>,
+    /// Block 102: the Setup status surface is live — clear-only frames
+    /// whose colour IS the message; torn down when the boot takes over.
+    status_render: bool,
+    /// Block 102: the last storage check result (drives the status
+    /// colour; re-checked on every resume).
+    storage: StorageState,
+    /// Block 102: the last Setup toast text (dedupe — `resumed` fires on
+    /// every return from Settings; the same message must not re-toast).
+    last_setup_toast: Option<String>,
     /// Surface aspect ratio (updated on resize + boot).
     aspect: f32,
     /// Logged-once flag: the pipeline lacks the WVP uniform (rows 0 —
@@ -720,6 +736,10 @@ impl App {
             boxes: Vec::new(),
             paired: Vec::new(),
             last_frame: None,
+            platform: None,
+            status_render: false,
+            storage: StorageState::Granted,
+            last_setup_toast: None,
             aspect: 1.0,
             warned_no_wvp: false,
             logged_first_frame: false,
@@ -2412,6 +2432,73 @@ impl App {
 
     /// Drop everything GPU-side (Android pause invalidates the surface;
     /// desktop close/exiting reuses the same path).
+    /// Install the platform UI (block 102) — Android's JNI toasts +
+    /// storage grant flow.  The desktop demo runs with `None`.
+    pub fn set_platform_ui(&mut self, ui: Box<dyn PlatformUi>) {
+        self.platform = Some(ui);
+    }
+
+    /// The Setup-state status surface (block 102): window + a minimal
+    /// clear-only renderer, so the screen carries the loader state
+    /// instead of going black.  Cheap to rebuild on every resume.
+    fn ensure_status_surface(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_none() {
+            match event_loop.create_window(self.window_attrs.clone()) {
+                Ok(w) => {
+                    log::info!("status window created (loader state on screen)");
+                    self.window = Some(Arc::new(w));
+                }
+                Err(e) => {
+                    log::error!("status window creation failed: {e}");
+                    return;
+                }
+            }
+        }
+        self.status_render = true;
+        if self.renderer.is_none() {
+            if let Some(w) = self.window.clone() {
+                let size = w.inner_size();
+                let (w_px, h_px) = (size.width.max(1), size.height.max(1));
+                match pollster::block_on(Renderer::new(w, w_px, h_px)) {
+                    Ok(r) => self.renderer = Some(r),
+                    // A not-yet-laid-out surface (0-size at creation on
+                    // some drivers) lands here — the next Resized gives
+                    // a real size and the colour waits one frame.
+                    Err(e) => log::error!("status renderer creation failed: {e}"),
+                }
+            }
+        }
+    }
+
+    /// Setup-state guidance (block 102): toast the ONE action the user
+    /// must take, only when it CHANGES (`resumed` fires on every return
+    /// from Settings — the same message must not re-toast).  The
+    /// storage-denied case toasts nothing here: the grant flow's own
+    /// prompt just fired.
+    fn notify_setup(&mut self) {
+        let AppState::Setup { folder, last_error } = &self.state else {
+            return;
+        };
+        let message = match self.storage {
+            StorageState::Denied => None,
+            StorageState::Granted => Some(match last_error {
+                Some(_) => format!(
+                    "Prototype Rust folder problem — copy your game files to {}",
+                    folder.display()
+                ),
+                None => format!("Copy your game files to {}", folder.display()),
+            }),
+        };
+        let Some(message) = message else { return };
+        if self.last_setup_toast.as_deref() != Some(message.as_str()) {
+            if let Some(ui) = self.platform.as_ref() {
+                ui.toast(&message);
+            }
+            log::info!("setup: {message}");
+            self.last_setup_toast = Some(message);
+        }
+    }
+
     fn teardown(&mut self) {
         if self.renderer.is_some() || !self.pipelines.is_empty() {
             log::info!("tearing down GPU state (surface is invalid across pause)");
@@ -2464,12 +2551,32 @@ impl App {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        log::info!("lifecycle: resume — re-scanning asset folder");
+        // Block 102: storage access FIRST — the scan below (and the
+        // loader's folder creation) is useless without it on Android 8+.
+        self.storage = match self.platform.as_mut() {
+            Some(ui) => ui.ensure_storage(),
+            None => StorageState::Granted,
+        };
+        log::info!(
+            "lifecycle: resume — re-scanning asset folder (storage {:?})",
+            self.storage
+        );
         self.state = scan_or_setup(&self.folder);
-        if matches!(self.state, AppState::Setup { .. }) {
-            // Files not (yet) usable — no render loop without them.
-            self.teardown();
+        if let AppState::Setup { .. } = self.state {
+            // Files not (yet) usable — but the loader must not go dark:
+            // a status surface stays up (block 102), with the colour +
+            // toast saying exactly what to do next.
+            self.ensure_status_surface(event_loop);
+            self.notify_setup();
             return;
+        }
+        if self.status_render {
+            // Setup → Ready transition: the status surface must go —
+            // the boot rebuilds window + renderer for the real pipeline.
+            self.teardown();
+            self.window = None;
+            self.status_render = false;
+            self.last_setup_toast = None;
         }
         if self.window.is_none() {
             match event_loop.create_window(self.window_attrs.clone()) {
@@ -2491,6 +2598,10 @@ impl ApplicationHandler for App {
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
         log::info!("lifecycle: suspend");
         self.teardown();
+        // Block 102: the status surface dies with the suspend too — the
+        // next resume re-decides the state and rebuilds it.
+        self.status_render = false;
+        self.last_setup_toast = None;
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _window_id: WindowId, event: WindowEvent) {
@@ -2508,6 +2619,26 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
+                // Block 102: the Setup status frame — clear-only, the
+                // colour IS the message (red = grant storage, amber =
+                // copy game files).  Short-circuits the whole gameplay
+                // path: nothing is booted while the loader waits.
+                if self.status_render {
+                    // The screen enum decouples this module from
+                    // AppState's feature gate (see platform_ui docs).
+                    let screen = match self.state {
+                        AppState::Setup { .. } => StatusScreen::Setup,
+                        AppState::Ready(_) => StatusScreen::Ready,
+                    };
+                    if let (Some(r), Some(color)) =
+                        (self.renderer.as_mut(), status_clear_color(screen, self.storage))
+                    {
+                        if let Err(e) = r.render_frame(color, &[]) {
+                            log::warn!("status frame failed: {e:?}");
+                        }
+                    }
+                    return;
+                }
                 // --- block 55: the audio edge's tail drain -------------
                 //     BEFORE the renderer borrow (the check touches no
                 //     GPU state).  After the movie is gone (ended, or a

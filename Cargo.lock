@@ -3180,6 +3180,7 @@ dependencies = [
  "android-activity",
  "android_logger",
  "cpal",
+ "jni",
  "log",
  "pollster",
  "prototype-audio",

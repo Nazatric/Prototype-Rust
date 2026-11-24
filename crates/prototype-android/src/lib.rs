@@ -26,11 +26,12 @@
 //! # Safety
 //!
 //! The whole crate is `#![deny(unsafe_code)]` — DENY, not FORBID,
-//! because the `activity` module (the single documented unsafe surface
-//! of the workspace: Android native-glue FFI, it cannot be written
-//! safely by definition) carries a module-level `allow` override.  Every
+//! because two modules carry module-level `allow` overrides: `activity`
+//! and (block 102) `jni_ui` — the two documented unsafe surfaces of the
+//! workspace (Android native-glue FFI and JNI calls to the platform's
+//! Java side; neither can be written safely by definition).  Every
 //! other module is unsafe-free in practice; any new unsafe use outside
-//! `activity` fails CI.
+//! those two fails CI.
 
 #![deny(unsafe_code)]
 #![deny(missing_docs)]
@@ -39,6 +40,11 @@ pub mod asset_folder;
 pub mod audio_registry;
 pub mod boot;
 pub mod game_files;
+// Block 102: the JNI platform UI — Android-only (same gate as
+// `activity`; everything host-portable lives in `platform_ui`).
+#[cfg(feature = "android-activity")]
+#[cfg(target_os = "android")]
+pub mod jni_ui;
 #[cfg(feature = "audio-cpal")]
 pub mod gameplay_audio;
 pub mod member_stream;
@@ -47,6 +53,7 @@ pub mod mission;
 pub mod movie;
 pub mod music_graph;
 pub mod nis;
+pub mod platform_ui;
 pub mod touch;
 
 // The shared winit ApplicationHandler: gated by `winit-app` only (no
@@ -64,6 +71,11 @@ pub use asset_folder::{default_folder, ensure_folder, validate_folder, FolderErr
 pub use audio_registry::{load_registry_from_archives, AUDIO_BOOTSTRAP_MEMBER};
 pub use boot::{boot_summary, prepare_programs, BootReport, BootPlan, PreparedPair};
 pub use game_files::{scan_folder, GameFileSet, ScanError};
+// Block 102: the platform UI surface (host-portable half; the JNI half
+// is `jni_ui`, gated like `activity`).
+pub use platform_ui::{
+    status_clear_color, storage_plan, PlatformUi, StatusScreen, StoragePlan, StorageState,
+};
 pub use movie::{find_boot_movie, BootMovie, MovieAdvance, MoviePlayerState};
 // Block 66: the mission music graph — cue → transition → stem →
 // shard clip, decoded from the user's own audio banks.

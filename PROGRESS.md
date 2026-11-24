@@ -1,5 +1,63 @@
-Last updated: 2026-11-24 ~01:2x UTC+8 — cron job 544788 (healthy,
-run_count 1; block 101 complete).
+Last updated: 2026-11-24 ~22:1x UTC+8 — user session (no cron);
+block 102 complete (first on-device launch fix; the CI APK pipeline is
+live on the user's repo and the aarch64 APK is on the ci-apks release).
+
+(Block 102 — FIRST ON-DEVICE LAUNCH FIX: STORAGE GRANT FLOW, TOASTS
+AND STATUS COLOURS.  The user's first install of the CI-built aarch64
+APK showed a BLACK SCREEN: in Setup the app created NO window,
+requested NO storage permission (MANAGE_EXTERNAL_STORAGE existed only
+in a doc comment) and had no visible signal at all — the loader went
+dark exactly when it needed the user most.  Three joined fixes.)
+
+(1) PLATFORM UI (crates/prototype-android/src/platform_ui.rs,
+host-portable, default-feature-safe).  The `PlatformUi` trait
+(`ensure_storage` + `toast`) decouples app.rs from the platform; the
+pure decision table `storage_plan(api, all_files_granted)` maps API
+30+ to the all-files settings page, 26-29 to the classic runtime
+dialog; `status_clear_color` gives the Setup clear-frame its meaning
+— deep red = grant storage, amber = copy your game files (the frame
+IS the message: the app has no text UI).  Deliberately decoupled from
+`AppState` (a plain `StatusScreen` enum) so the module compiles with
+default features, where `app.rs` does not exist.  +2 unit tests
+(workspace now 864/0).
+
+(2) JNI HALF (src/jni_ui.rs, gated android + android-activity like
+`activity`).  Toasts via the android-activity 0.6.1 docs' own toast
+example (`bind_java_type!` Context/Activity/Toast,
+`run_on_java_main_thread`, `as_cast_raw` borrow of the unowned
+activity global); `Environment.isExternalStorageManager` for the 30+
+gate; the ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION intent opens the
+all-files page (no package URI — one extra tap, two fewer JNI calls);
+`checkSelfPermission` + `requestPermissions(WRITE_EXTERNAL_STORAGE)`
+for 8-10.  EVERY call is fallible and swallowed-with-log — the grant
+flow must never take the app down; the status colour carries the
+message alone.  Runtime API level from `AndroidApp::sdk_version()`
+(the glue reads ro.build.version.sdk — the REAL level, no JNI).
+unsafe policy: `jni_ui` joins `activity` as the crate's second
+documented module-level allow (JNI casts cannot be safe by
+definition).  jni = "0.22" added, target-gated (must track
+android-activity 0.6's own jni 0.22.x).
+
+(3) APP WIRING (src/app.rs).  `resumed` checks storage BEFORE the
+scan and, in Setup, now keeps a status window + minimal clear-only
+renderer up (the old path torn down and returned — no window at
+all), toasts the one action to take (deduped per message; the
+storage-denied case stays quiet because the grant prompt just
+fired); the Setup->Ready transition tears the status surface down so
+the boot rebuilds the real pipeline.  `RedrawRequested` short-circuits
+to the status colour while `status_render` is set.  The APK manifest
+gains MANAGE_EXTERNAL_STORAGE + WRITE (max_sdk_version 29) via
+cargo-apk `uses_permission` blocks.
+
+Verified in-sandbox before push: workspace 864/0; `cargo check -p
+prototype-android --features android-activity --target
+aarch64-linux-android` green (jni 0.22 rejects plain &str for names/
+signatures — `jni_str!`/`jni_sig!` literals are the contract;
+requestPermissions needs BOTH the array and the request-code int);
+winit-app host check green.  Sandbox op note: cargo 1.100's SPARSE
+crates.io index downloads fail here ("failed to find X in path
+source", reproducible even with a clean index cache) —
+CARGO_REGISTRIES_CRATES_IO_PROTOCOL=git sidesteps it.
 
 (Block 101 — FRONTEND SHADER RENDER TEST: THE SHIPPED CXFORM PAIR
 CONSUMED 1:1 + DLL BLOB ROLE CROSS-REFERENCE + MEDIA 41.  NEXT-UP #7's
