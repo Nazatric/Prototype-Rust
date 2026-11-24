@@ -95,7 +95,9 @@ package_label = "prototype-rs"
 apk_label = "Prototype Rust"
 
 [package.metadata.android.sdk]
-min_sdk_version = 24
+# 26 = Android 8.0 — cpal 0.18 links libaaudio (API 26+); see
+# .cargo/config.toml for the full rationale.  target 34 = Android 14.
+min_sdk_version = 26
 target_sdk_version = 34
 
 [package.metadata.android.application]

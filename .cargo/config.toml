@@ -1,21 +1,27 @@
 # Cross-compilation linkers for Android (used by CI and by anyone with an
-# NDK installed).  API 24 = Android 7.0 = minSdkVersion of the manifest.
+# NDK installed).  API 26 = Android 8.0 = minSdkVersion of the manifest.
+#
+# Why 26, not 24: cpal 0.18's Android audio path links libaaudio, which
+# exists in the NDK sysroot only from API 26 up — an API 24 link fails
+# with "unable to find library -laaudio" (first CI run, 2026-11-24).
+# Runtime impact: Android 7.x (API 24/25) devices can no longer load the
+# APK; Android 8.0+ (2017, ~99% of devices) is the floor.
 #
 # This sandbox has no NDK, so these never run locally — they exist so that
 # `cargo apk build` / `cargo build --target aarch64-linux-android` work on
 # the GitHub Actions runner without further configuration.
 
 [target.aarch64-linux-android]
-linker = "aarch64-linux-android24-clang"
+linker = "aarch64-linux-android26-clang"
 
 [target.armv7-linux-androideabi]
-linker = "armv7a-linux-androideabi24-clang"
+linker = "armv7a-linux-androideabi26-clang"
 
 [target.i686-linux-android]
-linker = "i686-linux-android24-clang"
+linker = "i686-linux-android26-clang"
 
 [target.x86_64-linux-android]
-linker = "x86_64-linux-android24-clang"
+linker = "x86_64-linux-android26-clang"
 
 # Dependencies stay optimised in dev builds: debug builds of reverse-mode
 # decoders are unusably slow otherwise, while workspace code stays fast to
