@@ -43,6 +43,9 @@ jobs:
       # Block 57/58: the audio device + content edges.  CI runners have
       # no sound device — the e2e device tests SKIP by design there;
       # the unit tests + the cfg path still gate the feature compile.
+      - name: Install ALSA dev headers (cpal/alsa-sys build dependency)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+
       - name: Audio device/content edge suite (feature gate, device tests skip device-less)
         run: cargo test -p prototype-android --features audio-cpal --locked
 
