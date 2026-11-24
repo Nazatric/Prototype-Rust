@@ -4,6 +4,15 @@ ANR fix HELD — no more 10 s death — but the boot's full index+mesh
 pass never returned on the phone, and the storage grant flow never
 fired because of a hardcoded literal.  Both fixed here).
 
+(Block 112 — THE SETTINGS LOOP CLOSES.  The persisted settings now
+LOAD at startup (with_state reads game-settings.json — the loop was
+write-only before this), and the Options value screens ADJUST: Accept
+on STREAM BUDGET / MESH CAP / MASTER VOLUME / LOOK SENSITIVITY steps
+the knob (the app clamps per knob, applies immediately — the stream
+budget feeds MemberStreamConfig at attach — and persists atomically).
+The row labels re-render from the saved state, so what you see IS
+what is persisted.  180/0 (winit-app); aarch64 gate clean.)
+
 (Block 111 — THE CENSUS + REAL OPTION VALUES.  (1) The worker now
 runs the menu_assets census at boot: `menu census: N/25 real .gfx
 screen(s) present — …` lands in boot-log.txt (proven hash lookups,

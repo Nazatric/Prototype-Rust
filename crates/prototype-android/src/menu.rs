@@ -100,6 +100,12 @@ pub enum MenuAction {
     OpenStorageSettings,
     /// Retry the asset-folder scan.
     RetryScan,
+    /// Block 112: step the selected option's value (tap = +1 step;
+    /// the app maps screen+row onto the knob, applies and persists).
+    Adjust {
+        /// +1 per tap (the app clamps per knob).
+        delta: i32,
+    },
 }
 
 /// What the drawer needs from the app this frame.
@@ -226,7 +232,8 @@ impl MenuState {
             | MenuAction::ExitWorld
             | MenuAction::QuitApp
             | MenuAction::OpenStorageSettings
-            | MenuAction::RetryScan => action,
+            | MenuAction::RetryScan
+            | MenuAction::Adjust { .. } => action,
         }
     }
 
@@ -319,6 +326,10 @@ impl MenuState {
                 }
                 _ => MenuAction::QuitApp,
             },
+            // The value screens: Accept steps the shown knob UP (the
+            // app clamps + persists; the row re-renders from settings).
+            MenuScreen::OptionsVideo | MenuScreen::OptionsAudio
+            | MenuScreen::OptionsControls => MenuAction::Adjust { delta: 1 },
             _ => MenuAction::None,
         }
     }
@@ -657,5 +668,40 @@ mod pause_tests {
         m.screen = MenuScreen::Pause;
         m.selected = 2;
         assert_eq!(m.nav(MenuAction::Accept, &ctx), MenuAction::QuitApp);
+    }
+}
+
+#[cfg(test)]
+mod adjust_tests {
+    use super::*;
+
+    /// Block 112: Accept on a value screen steps the knob (the app
+    /// clamps + persists; the menu only reports the intent).
+    #[test]
+    fn value_screens_report_adjust_intent() {
+        let ctx = MenuContext {
+            boot_line: "idle",
+            progress: None,
+            storage_denied: false,
+            files_ok: true,
+            folder: "/game",
+            stream_budget_mb: 24,
+            master_volume: 0.8,
+            look_sensitivity: 1.0,
+        };
+        let mut m = MenuState { screen: MenuScreen::OptionsVideo, selected: 0 };
+        assert_eq!(
+            m.nav(MenuAction::Accept, &ctx),
+            MenuAction::Adjust { delta: 1 }
+        );
+        m.screen = MenuScreen::OptionsAudio;
+        assert_eq!(
+            m.nav(MenuAction::Accept, &ctx),
+            MenuAction::Adjust { delta: 1 }
+        );
+        // The row LABELS show the context values (the persisted state).
+        assert!(m.rows(&ctx)[0].contains("80%"));
+        let mut v = MenuState { screen: MenuScreen::OptionsVideo, selected: 0 };
+        assert!(v.rows(&ctx)[0].contains("24 MB"));
     }
 }

@@ -1179,6 +1179,9 @@ impl App {
     /// Build the app from an already-computed [`AppState`] (avoids a
     /// double scan in `android_main`, which logs before the loop).
     pub fn with_state(folder: PathBuf, state: AppState) -> Self {
+        // Block 112: the persisted settings load HERE (the tap-to-adjust
+        // loop saves back into the same file).
+        let settings = crate::settings::load(&folder);
         Self {
             state,
             folder,
@@ -1214,7 +1217,7 @@ impl App {
             menu_hits: crate::menu::HitRegions::default(),
             cursor: [0.0, 0.0],
             in_world: false,
-            settings: crate::settings::Settings::default(),
+            settings,
             quit_requested: false,
             stick: VirtualStick::new(),
             screen_px: [1280.0, 720.0],
@@ -2438,6 +2441,37 @@ impl App {
             crate::menu::MenuAction::OpenStorageSettings => {
                 if let Some(ui) = self.platform.as_mut() {
                     let _ = ui.ensure_storage();
+                }
+            }
+            crate::menu::MenuAction::Adjust { delta } => {
+                // Block 112: map (screen, row, step) onto the knob,
+                // apply, persist (the real setting is live immediately:
+                // the stream budget re-reads at the next attach).
+                let s = &mut self.settings;
+                match self.menu.screen {
+                    crate::menu::MenuScreen::OptionsVideo => match self.menu.selected {
+                        0 => {
+                            s.stream_budget_mb = (s.stream_budget_mb as i32 + delta * 8)
+                                .clamp(8, 64) as u32;
+                        }
+                        _ => {
+                            s.mesh_cap_per_frame =
+                                if s.mesh_cap_per_frame > 3 { 3 } else { 6 };
+                        }
+                    },
+                    crate::menu::MenuScreen::OptionsAudio => {
+                        s.master_volume =
+                            (s.master_volume + delta as f32 * 0.1).clamp(0.0, 1.0);
+                    }
+                    crate::menu::MenuScreen::OptionsControls => {
+                        s.look_sensitivity =
+                            (s.look_sensitivity + delta as f32 * 0.25).clamp(0.25, 3.0);
+                    }
+                    _ => {}
+                }
+                crate::settings::save(&self.folder, s);
+                if let Some(w) = &self.window {
+                    w.request_redraw();
                 }
             }
             crate::menu::MenuAction::RetryScan => {
