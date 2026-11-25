@@ -449,45 +449,50 @@ pub fn menu_draw(
             list.text_centered(atlas, w / 2.0, h - 40.0, "tap / press any key", 18.0, DIM);
         }
         MenuScreen::Loading => {
-            list.text_centered(atlas, w / 2.0, h * 0.42, ctx.boot_line, 26.0, TEXT);
-            // The loading bar (the real statictransition's role).
-            let bar_w = w * 0.6;
+            // The real loading screen: title block + a THIN bar pinned
+            // to the bottom edge (the statictransition's shape).
+            list.text_centered(atlas, w / 2.0, h * 0.40, ctx.boot_line, 26.0, TEXT);
+            let bar_w = w * 0.7;
             let bx = (w - bar_w) / 2.0;
-            let by = h * 0.5;
-            list.rect(bx, by, bar_w, 14.0, BG_ALT);
+            let by = h - 64.0;
+            list.rect(bx, by, bar_w, 8.0, BG_ALT);
             if let Some(p) = ctx.progress {
-                list.rect(bx, by, bar_w * p.clamp(0.0, 1.0), 14.0, ACCENT);
+                list.rect(bx, by, bar_w * p.clamp(0.0, 1.0), 8.0, ACCENT);
                 list.text_centered(
                     atlas,
                     w / 2.0,
-                    by + 40.0,
+                    by - 34.0,
                     &format!("{}%", (p * 100.0) as i32),
                     20.0,
                     DIM,
                 );
             } else {
-                list.text_centered(atlas, w / 2.0, by + 40.0, "working…", 20.0, DIM);
+                list.text_centered(atlas, w / 2.0, by - 34.0, "working…", 20.0, DIM);
             }
         }
         MenuScreen::InGame => { /* the world draws beneath; HUD in block 108 */ }
         _ => {
-            // The item list, centered vertically.
+            // The item stack — the real menu sits LEFT (a vertical list
+            // under the title block), not centered: left-aligned labels,
+            // the selection marked by a red left-edge bar + bright text
+            // (the game's row highlight, drawn natively).
             let px = 30.0;
-            let row_h = 52.0;
+            let row_h = 56.0;
+            let x0 = w * 0.14;
             let total = rows.len() as f32 * row_h;
-            let mut y = (h - total) / 2.0;
+            let mut y = h * 0.52 - total / 2.0;
             for (i, label) in rows.iter().enumerate() {
                 let sel = i == menu.selected;
                 if sel {
-                    list.rect(0.0, y, w, row_h, ACCENT);
+                    list.rect(0.0, y, 8.0, row_h, ACCENT);
+                    list.rect(8.0, y, w * 0.42, row_h, [ACCENT[0], ACCENT[1], ACCENT[2], 0.35]);
                 }
-                let cx = w / 2.0 - atlas.measure(label, px)[0] / 2.0;
-                list.text(atlas, cx, y + (row_h - px) / 2.0 + 2.0, label, px, if sel { TEXT } else { DIM });
+                list.text(atlas, x0, y + (row_h - px) / 2.0 + 2.0, label, px, if sel { TEXT } else { DIM });
                 hits.rows.push((i, [0.0, y, w, row_h]));
                 y += row_h;
             }
             // Hint bar (the buttonhint.gfx role).
-            list.text_centered(atlas, w / 2.0, h - 28.0, "up/down select   enter confirm   esc back", 16.0, DIM);
+            list.text_centered(atlas, w / 2.0, h - 30.0, "up/down select   enter confirm   esc back", 16.0, DIM);
         }
     }
 }

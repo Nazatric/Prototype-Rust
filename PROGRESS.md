@@ -4,6 +4,17 @@ ANR fix HELD — no more 10 s death — but the boot's full index+mesh
 pass never returned on the phone, and the storage grant flow never
 fired because of a hardcoded literal.  Both fixed here).
 
+(Block 114 — THE MENU, DRESSED LIKE THE GAME.  The user's first
+reaction: "it isn't the prototype menu" — the real art bridge waits
+on the census, but the LAYOUT can already match the real menu's
+shape: the item stack sits LEFT under the title block (the real
+menu's vertical list), the selection is a red LEFT-EDGE bar + a
+translucent red wash + bright text (not a full-width highlight), and
+the loading screen is the statictransition's shape — a THIN bar
+pinned to the bottom edge with the percentage above it.  Hit regions
+stay full-width (taps work anywhere on a row).  181/0; the real .gfx
+extraction remains gated on the next boot-log's census line.)
+
 (Block 113 — TWO DEVICE-PROVEN BUGS FIXED (the user's first run of
 the block-107+ APK + the new boot-log).  BUG 1 — THE PARALLEL INDEX
 OOM-KILLS THE PHONE, SILENTLY: the journal shows FOUR boot sessions,
