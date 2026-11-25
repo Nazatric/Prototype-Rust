@@ -56,7 +56,7 @@ const CANVAS: u32 = 1024;
 /// The charset the menus need: ASCII + the punctuation the UI uses.
 fn charset() -> Vec<char> {
     let mut chars: Vec<char> = (32u8..127u8).map(|b| b as char).collect();
-    for c in ['→', '←', '↑', '↓', '✓', '…', '•', '%'] {
+    for c in ['→', '←', '↑', '↓', '✓', '…', '•', '%', '—', '·', '◀'] {
         chars.push(c);
     }
     chars

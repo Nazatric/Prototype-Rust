@@ -10,6 +10,10 @@
 //!
 //! Host-testable by construction: [`MenuState::nav`] is a pure state
 //! machine and [`menu_draw`] is pure CPU layout.
+/// Block 115: sentinel row id for the on-screen Back strip (never a
+/// real row index — the row list is small).
+pub const ROW_BACK: usize = usize::MAX - 1;
+
 
 /// The REAL screens (engine DLL strings, `art\hud\*.gfx`).
 pub const REAL_SCREENS: &[&str] = &[
@@ -493,6 +497,11 @@ pub fn menu_draw(
             }
             // Hint bar (the buttonhint.gfx role).
             list.text_centered(atlas, w / 2.0, h - 30.0, "up/down select   enter confirm   esc back", 16.0, DIM);
+            // Block 115: THE ON-SCREEN BACK ROW — Android has no Esc
+            // key; a visible bottom-left strip with its own hit region
+            // gives every submenu the back affordance natively.
+            list.text(atlas, 24.0, h - 70.0, "◀ Back", 22.0, ACCENT);
+            hits.rows.push((ROW_BACK, [0.0, h - 82.0, 220.0, 52.0]));
         }
     }
 }
@@ -621,7 +630,8 @@ mod tests {
         let mut list = prototype_render::UiDrawList { screen: [1280.0, 720.0], ..Default::default() };
         let mut hits = HitRegions::default();
         menu_draw(&m, &ctx, &atlas, &mut list, &mut hits);
-        assert_eq!(hits.rows.len(), 4);
+        // 4 menu rows + the block-115 on-screen Back strip.
+        assert_eq!(hits.rows.len(), 5);
         for (_, r) in &hits.rows {
             assert!(r[3] > 0.0 && r[1] < 720.0);
         }

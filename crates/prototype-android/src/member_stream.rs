@@ -104,6 +104,11 @@ pub struct MemberMeshLoad {
 /// What one physical load pass did (the App's per-frame delta).
 #[derive(Debug, Clone, Default)]
 pub struct MemberMeshLoads {
+    /// Block 115: the tick stopped on the member cap (more work pending).
+    pub member_capped: bool,
+    /// Block 115: the tick stopped on the wall-clock deadline (more work
+    /// pending — the caller keeps streaming next frame).
+    pub time_capped: bool,
     /// Members whose payload was fetched AND decoded (loaded
     /// bookkeeping applies to exactly these, in attempt order).
     pub loads: Vec<MemberMeshLoad>,
@@ -300,14 +305,40 @@ impl MemberMeshStream {
     /// desired).  A fetch/decode failure is NOT marked loaded: it
     /// stays desired and is retried next frame (bounded per frame,
     /// honestly counted).
-    pub fn load_meshes(&mut self, hashes: &[u32], pool_room: usize) -> MemberMeshLoads {
+    // Block 115: THE ANR FIX — the user's phone froze (grey screen +
+    // "isn't responding") because the first in-world frame loaded the
+    // WHOLE near-set synchronously on the MAIN thread: one giant cells
+    // member is a 0.5-2 s flash read + decode, and the entry set can be
+    // dozens of them.  The load is now budgeted: a wall-clock deadline
+    // AND a per-tick member cap; whatever doesn't fit carries to the
+    // next frame (the stream state machine re-plans the same set —
+    // progress is continuous, the frame loop stays live).
+    pub fn load_meshes(
+        &mut self,
+        hashes: &[u32],
+        pool_room: usize,
+        deadline: Option<std::time::Instant>,
+        max_members: usize,
+    ) -> MemberMeshLoads {
         let mut out = MemberMeshLoads::default();
         let mut room = pool_room;
+        let mut loaded_members = 0usize;
         for &hash in hashes {
             if room == 0 {
                 out.pool_capped = true;
                 break;
             }
+            if loaded_members >= max_members {
+                out.member_capped = true;
+                break;
+            }
+            if let Some(d) = deadline {
+                if std::time::Instant::now() >= d {
+                    out.time_capped = true;
+                    break;
+                }
+            }
+            loaded_members += 1;
             let Some(&gi) = self.hash_to_gi.get(&hash) else {
                 // Not in the member table — a caller-visible invariant
                 // break; count it and move on (fail-closed).
@@ -642,7 +673,7 @@ mod tests {
         assert_eq!(set.load, vec![0x0049_b319], "the morgue member is desired");
         assert!(set.unload.is_empty());
         // Physical load: every desired hash fetches from disk.
-        let loads = stream.load_meshes(&set.load, 64);
+        let loads = stream.load_meshes(&set.load, 64, None, usize::MAX);
         assert_eq!(loads.errors, 0, "{:?}", loads.first_errors);
         assert_eq!(loads.missing_spans, 0);
         assert!(!loads.pool_capped);
@@ -694,7 +725,7 @@ mod tests {
         let at_a = stream.plan(a_center);
         assert_eq!(at_a.load, vec![0x51a2_ca3b], "A desired, near first");
         assert!(at_a.unload.is_empty());
-        let load_a = stream.load_meshes(&at_a.load, 64);
+        let load_a = stream.load_meshes(&at_a.load, 64, None, usize::MAX);
         assert_eq!(load_a.errors, 0, "{:?}", load_a.first_errors);
         assert_eq!(load_a.loads.len(), 1);
         assert_eq!(load_a.loads[0].global_index, 0);
@@ -709,7 +740,7 @@ mod tests {
         // bookkeeping first (the App would drop A's batches here)
         stream.apply_unload(&at_b.unload);
         assert_eq!(stream.loaded_count(), 0);
-        let load_b = stream.load_meshes(&at_b.load, 64);
+        let load_b = stream.load_meshes(&at_b.load, 64, None, usize::MAX);
         assert_eq!(load_b.errors, 0, "{:?}", load_b.first_errors);
         assert_eq!(load_b.loads.len(), 1);
         let b = &load_b.loads[0];
@@ -726,7 +757,7 @@ mod tests {
         assert_eq!(back.unload, vec![0x2268_de7e]);
         assert_eq!(back.load, vec![0x51a2_ca3b]);
         stream.apply_unload(&back.unload);
-        let reload_a = stream.load_meshes(&back.load, 64);
+        let reload_a = stream.load_meshes(&back.load, 64, None, usize::MAX);
         assert_eq!(reload_a.errors, 0);
         assert_eq!(stream.loaded_count(), 1);
         assert!(stream.plan(a_center).is_empty(), "settled at A again");
@@ -746,7 +777,7 @@ mod tests {
         let (mut stream, _) = mini_stream(4, 1.5);
         let morgue = [1687.0, 10.0, -1845.0];
         let set = stream.plan(morgue);
-        let none = stream.load_meshes(&set.load, 0);
+        let none = stream.load_meshes(&set.load, 0, None, usize::MAX);
         assert!(none.is_empty());
         assert!(none.pool_capped);
         assert_eq!(stream.loaded_count(), 0, "zero room must not load");
@@ -774,7 +805,7 @@ mod tests {
         // pool_capped, and the un-attempted objects member stays
         // desired (next frame, after unloads free room).
         assert_eq!(set.load, vec![0x2268_de7e, 0x51a2_ca3b], "near first");
-        let loads = pool.load_meshes(&set.load, 1);
+        let loads = pool.load_meshes(&set.load, 1, None, usize::MAX);
         assert_eq!(loads.errors, 0, "{:?}", loads.first_errors);
         assert!(loads.pool_capped);
         assert_eq!(loads.attempted, vec![0x2268_de7e], "the near member only");
@@ -849,7 +880,7 @@ mod tests {
             // morgue member is absent from THIS table, impossible.
             panic!("the member table is archive-independent; the load set must exist");
         }
-        let loads = stream.load_meshes(&set.load, 64);
+        let loads = stream.load_meshes(&set.load, 64, None, usize::MAX);
         assert_eq!(stream.loaded_count(), 0, "nothing can load cross-archive");
         assert!(
             loads.missing_spans > 0 || loads.errors > 0,
@@ -907,7 +938,7 @@ mod tests {
         //     step 2c sequence: load_meshes then load_paired_meshes) -
         let at_a = stream.plan(a_center);
         assert_eq!(at_a.load, vec![0x51a2_ca3b]);
-        stream.load_meshes(&at_a.load, 64);
+        stream.load_meshes(&at_a.load, 64, None, usize::MAX);
         let paired_a = stream.load_paired_meshes(&at_a.load, a_center, 64);
         assert_eq!(paired_a.errors, 0, "{:?}", paired_a.first_errors);
         assert_eq!(paired_a.attempted, at_a.load, "A marked paired-loaded");
@@ -920,7 +951,7 @@ mod tests {
         assert_eq!(at_b.load, vec![0x2268_de7e]);
         stream.apply_unload(&at_b.unload);
         stream.unload_paired(&at_b.unload);
-        stream.load_meshes(&at_b.load, 64);
+        stream.load_meshes(&at_b.load, 64, None, usize::MAX);
         assert!(stream.paired_loaded().is_empty());
         let paired_b = stream.load_paired_meshes(&at_b.load, sign, 64);
         assert_eq!(paired_b.errors, 0, "{:?}", paired_b.first_errors);
@@ -953,7 +984,7 @@ mod tests {
         stream.apply_unload(&back.unload);
         stream.unload_paired(&back.unload);
         assert!(stream.paired_loaded().is_empty());
-        stream.load_meshes(&back.load, 64);
+        stream.load_meshes(&back.load, 64, None, usize::MAX);
         let reload = stream.load_paired_meshes(&back.load, a_center, 64);
         assert_eq!(reload.errors, 0);
         assert_eq!(reload.attempted, back.load);

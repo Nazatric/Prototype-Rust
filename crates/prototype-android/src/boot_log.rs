@@ -75,6 +75,16 @@ pub fn progress_fraction() -> Option<f32> {
     Some(done as f32 / total as f32)
 }
 
+/// Block 115: raw archive counters for the humanized loading text.
+pub fn progress_archives_total() -> usize {
+    PROGRESS.archives_total.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Block 115: archives finished so far.
+pub fn progress_archives_done() -> usize {
+    PROGRESS.archives_done.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// UI side: the raw progress snapshot for the loading text.
 pub fn progress_line() -> String {
     let total = PROGRESS.archives_total.load(std::sync::atomic::Ordering::Relaxed);

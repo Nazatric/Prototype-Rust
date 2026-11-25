@@ -4,6 +4,28 @@ ANR fix HELD — no more 10 s death — but the boot's full index+mesh
 pass never returned on the phone, and the storage grant flow never
 fired because of a hardcoded literal.  Both fixed here).
 
+(Block 115 — THE ANR KILLED AND THE ANDROID GAPS CLOSED.  The user's
+device run: the index COMPLETED (262.8 s, cache written — boot 2+ is
+a cache hit), the census found 25/25 REAL .gfx SCREENS in their
+art.rcf (protomainmenu, protostart, protoselectdifficulty, … the whole
+frontend), and then the app froze (grey screen → the system's
+"isn't responding" dialog).  ROOT CAUSE: the per-frame member stream
+loaded the WHOLE near-set synchronously on the MAIN thread — one giant
+cells member is a 0.5-2 s flash read + decode, the entry set can be
+dozens, so the first in-world frame blocked for minutes.  FIX: the
+load is budgeted (250 ms wall-clock + the settings member cap per
+tick; the rest streams over the following frames — the state machine
+re-plans every frame).  ALSO: the lean index now reads payloads by
+PREAD (read_member_payload — one sequential read instead of mmap
+page-faulting; the user's 262 s index should roughly halve); the
+loading screen shows HUMAN stages ("Reading game files — 3 of 5
+archives") instead of raw journal lines with paths and "(s)" timers;
+the ANDROID BACK button routes to the Back action and every submenu
+gains a visible bottom-left "◀ Back" strip with its own hit region;
+the atlas charset gains — · ◀.  181/0; aarch64 gate clean.  NEXT: the
+REAL ART — extract the embedded bitmaps from the 25 present .gfx
+screens (SWF DefineBitsLossless2) onto the menu backgrounds.)
+
 (Block 114 — THE MENU, DRESSED LIKE THE GAME.  The user's first
 reaction: "it isn't the prototype menu" — the real art bridge waits
 on the census, but the LAYOUT can already match the real menu's

@@ -2400,12 +2400,43 @@ impl App {
         let stage = boot_log::current_stage().unwrap_or_default();
         match &self.boot_phase {
             BootPhase::Done => ("world ready".to_string(), Some(1.0)),
-            BootPhase::Failed(e) => (format!("boot failed: {e}"), None),
-            BootPhase::Idle => ("preparing…".to_string(), None),
-            _ => (
-                format!("{stage} — {}", boot_log::progress_line()),
-                frac,
+            BootPhase::Failed(e) => (
+                // Block 115: the failure line stays short and readable —
+                // the FULL error lives in boot-log.txt.
+                {
+                    let e = e.clone();
+                    let short = if e.len() > 60 { format!("{}… (see boot-log.txt)", &e[..60]) } else { e };
+                    format!("boot failed: {short}")
+                },
+                None,
             ),
+            BootPhase::Idle => ("preparing…".to_string(), None),
+            _ => {
+                // Block 115: THE LOADING TEXT FIX — the screen showed the
+                // raw journal stage (paths, "member(s)", 292-second timers:
+                // the user read it as broken text).  Human stages + a short
+                // progress tail instead.
+                let total = boot_log::progress_archives_total();
+                let done = boot_log::progress_archives_done();
+                let line = if stage.contains("shader prep") {
+                    "Preparing shaders…".to_string()
+                } else if stage.contains("index") {
+                    format!("Reading game files — {} of {} archives", done, total)
+                } else if stage.contains("census") {
+                    "Checking menu art…".to_string()
+                } else if stage.contains("pair") {
+                    "Linking render shaders…".to_string()
+                } else if stage.contains("gpu") || stage.contains("attach") {
+                    "Preparing renderer…".to_string()
+                } else if stage.contains("frontend") || stage.contains("art") {
+                    "Extracting menu art…".to_string()
+                } else if stage.is_empty() {
+                    "Preparing…".to_string()
+                } else {
+                    format!("Working… ({})", &stage[..stage.len().min(40)])
+                };
+                (line, frac)
+            }
         }
     }
 
@@ -2525,7 +2556,13 @@ impl App {
             Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space) => {
                 crate::menu::MenuAction::Accept
             }
-            Key::Named(NamedKey::Escape) => crate::menu::MenuAction::Back,
+            // Block 115: the ANDROID BACK button/gesture — winit's
+            // android backend surfaces it as Backspace (KEYCODE_BACK),
+            // and desktop backspace reads as "back" too.  Both route to
+            // the same Back action (in-world: exit to the menu).
+            Key::Named(NamedKey::Escape) | Key::Named(NamedKey::Backspace) => {
+                crate::menu::MenuAction::Back
+            }
             Key::Character(c) => match c.as_str() {
                 "w" | "W" => crate::menu::MenuAction::Move(-1),
                 "s" | "S" => crate::menu::MenuAction::Move(1),
@@ -2555,6 +2592,15 @@ impl App {
         }
         let [x, y] = self.cursor;
         for (row, r) in &self.menu_hits.rows {
+            if *row == crate::menu::ROW_BACK
+                && x >= r[0]
+                && x < r[0] + r[2]
+                && y >= r[1]
+                && y < r[1] + r[3]
+            {
+                self.menu_nav(crate::menu::MenuAction::Back);
+                return;
+            }
             if x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3] {
                 self.menu.selected = *row;
                 self.menu_nav(crate::menu::MenuAction::Accept);
@@ -3780,7 +3826,14 @@ impl ApplicationHandler for App {
                             //     that is left; batches through the
                             //     SAME builder the boot used.
                             let room = MEMBER_MESH_POOL_CAP.saturating_sub(self.member_meshes);
-                            let loads = stream.load_meshes(&set.load, room);
+                                                        // Block 115: budgeted — 250 ms of loading per
+                            // frame, the settings cap as the member limit;
+                            // the rest streams over the following frames
+                            // (the near-set re-plans every frame).
+                            let deadline =
+                                std::time::Instant::now() + std::time::Duration::from_millis(250);
+                            let cap = self.settings.mesh_cap_per_frame.max(1) as usize;
+                            let loads = stream.load_meshes(&set.load, room, Some(deadline), cap);
                             if loads.errors > 0 {
                                 for e in &loads.first_errors {
                                     log::warn!("member stream: {e}");

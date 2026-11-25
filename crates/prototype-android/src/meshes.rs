@@ -974,10 +974,24 @@ fn lean_index_one_archive(
     };
     rep.archives_opened += 1;
     let member_count = archive.entries.len();
+    // Block 115: the LEAN SCAN reads payloads by PREAD now — the block-113
+    // mmap served the parse, but payload_decompressed over the mmap slice
+    // faults the file page-by-page: the user's index spent 262 s, one
+    // giant cells member alone ~0.6 s of faulting.  read_member_payload
+    // does one sequential positional read (BIT-IDENTICAL output, proven
+    // against the real fixtures) and stays OOM-safe (span-sized buffer,
+    // not the whole archive).  The mmap path stays as the fallback.
+    let mut span_file = std::fs::File::open(path).ok();
     for entry in archive.entries.iter() {
         rep.members_scanned += 1;
         crate::boot_log::progress_members(1);
-        match archive.payload_decompressed(entry) {
+        let payload = match span_file.as_mut() {
+            Some(f) => prototype_rcf::read_member_payload(f, entry).or_else(|_| {
+                archive.payload_decompressed(entry)
+            }),
+            None => archive.payload_decompressed(entry),
+        };
+        match payload {
             Ok(p3d) => {
                 rep.entries
                     .push(prototype_p3d::world::scan_world_member_opts(
