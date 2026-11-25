@@ -29,6 +29,10 @@ log               = "0.4"
 # Block 107: the menu system + persisted settings (game-settings.json).
 serde             = { workspace = true }
 serde_json        = { workspace = true }
+# Block 113: the parallel index mmaps the archives — whole multi-hundred-MB
+# files in anonymous RAM across three workers tripped the phone's
+# low-memory killer (silent mid-boot death, four times in a row).
+memmap2           = { workspace = true }
 
 # All-target optional deps for the shared winit App handler (`app.rs`,
 # feature `winit-app`).  On desktop the x11/wayland backends apply; on

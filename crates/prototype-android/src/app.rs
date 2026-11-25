@@ -4125,6 +4125,12 @@ impl ApplicationHandler for App {
                         return;
                     }
                 }
+                // Block 113: THE MENU-TAP FIX — the cursor position is
+                // ONLY updated by winit's CursorMoved, which a finger
+                // never fires: menu taps hit-tested (0,0) and no row
+                // ever matched.  Sync the pointer from the touch FIRST
+                // (every menu click uses the real tap position now).
+                self.cursor = [point.x, point.y];
                 // Block 38: finger 1 = mouse (the pre-38 contract), a
                 // concurrent finger 2 = the camera look — its pixel
                 // deltas feed the orbit the frame loop applies.

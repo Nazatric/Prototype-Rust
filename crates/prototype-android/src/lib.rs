@@ -36,6 +36,7 @@
 #![deny(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod archive_mmap;
 pub mod asset_folder;
 pub mod audio_registry;
 pub mod boot;

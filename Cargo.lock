@@ -3218,6 +3218,7 @@ dependencies = [
  "cpal",
  "jni",
  "log",
+ "memmap2",
  "pollster",
  "prototype-audio",
  "prototype-common",

@@ -4,6 +4,30 @@ ANR fix HELD — no more 10 s death — but the boot's full index+mesh
 pass never returned on the phone, and the storage grant flow never
 fired because of a hardcoded literal.  Both fixed here).
 
+(Block 113 — TWO DEVICE-PROVEN BUGS FIXED (the user's first run of
+the block-107+ APK + the new boot-log).  BUG 1 — THE PARALLEL INDEX
+OOM-KILLS THE PHONE, SILENTLY: the journal shows FOUR boot sessions,
+each skipping the sound banks and finishing the small archives
+(movies/scripts/shaders) and then going DARK — no progress lines from
+the two big archives, no summary, no cache write, then a fresh
+"boot log installed" (a new process).  Three parallel workers × whole
+multi-hundred-MB archives in anonymous RAM (art + the big cells
+archive + movies ≈ 3-4 GB) tripped the low-memory killer: no panic,
+no journal line, just death.  THE FIX: crate::archive_mmap (the one
+allow(unsafe_code) module, house pattern) — the index MMAPS the
+archive (clean evictable file-backed pages; the kernel drops pages
+under pressure, the process LIVES) with a full-read fallback; an
+"archive opened — N MB" line makes the big archives visible from
+second one.  BUG 2 — MENU TAPS COULD NEVER WORK: the cursor was only
+updated by winit's CursorMoved, which a finger never fires — every
+tap hit-tested (0,0) and no row matched (the press-any screen worked
+because it accepts any tap anywhere).  THE FIX: the touch handler
+syncs the pointer from the touch position BEFORE the hit test.
+181/0 (winit-app) incl. a mapped-vs-plain-read fixture test; aarch64
+gate clean.  NEXT DEVICE RUN EXPECTED: open lines for art + the big
+cells archive, per-250 progress, "world index:" summary, cache
+written, menu census, and WORKING menu taps.)
+
 (Block 112 — THE SETTINGS LOOP CLOSES.  The persisted settings now
 LOAD at startup (with_state reads game-settings.json — the loop was
 write-only before this), and the Options value screens ADJUST: Accept

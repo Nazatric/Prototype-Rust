@@ -938,15 +938,33 @@ fn lean_index_one_archive(
         archives_failed: 0,
     };
     let started = std::time::Instant::now();
-    let data = match std::fs::read(path) {
-        Ok(d) => d,
+    // Block 113: MMAP the archive (crate::archive_mmap — the one
+    // allowed-unsafe helper).  The file must NOT sit in anonymous RAM:
+    // three parallel workers × whole multi-hundred-MB archives tripped
+    // the phone's low-memory killer and the process died SILENTLY
+    // mid-index.  Mapped pages are clean file-backed pages — the kernel
+    // evicts them under pressure; the decompress peak stays one-member-
+    // at-a-time.
+    let bytes = match crate::archive_mmap::ArchiveBytes::load(path) {
+        Ok(b) => b,
         Err(e) => {
             rep.archives_failed += 1;
-            rep.first_errors.push(format!("{}: read failed: {e}", path.display()));
+            rep.first_errors.push(e);
             return rep;
         }
     };
-    let archive = match prototype_rcf::RcfArchive::parse(&data) {
+    let data = bytes.as_slice();
+    // Open line: the big archives take minutes — the boot log must
+    // show them ALIVE from the first second (the 4 silent boots read
+    // as a hang; this line + the per-250-member lines fix that).
+    let open_line = format!(
+        "index: archive {gi} ({}) opened — {} MB",
+        path.display(),
+        data.len() / (1024 * 1024)
+    );
+    log::info!("{open_line}");
+    crate::boot_log::bootlog(&open_line);
+    let archive = match prototype_rcf::RcfArchive::parse(data) {
         Ok(a) => a,
         Err(e) => {
             rep.archives_failed += 1;

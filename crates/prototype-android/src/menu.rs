@@ -701,7 +701,7 @@ mod adjust_tests {
         );
         // The row LABELS show the context values (the persisted state).
         assert!(m.rows(&ctx)[0].contains("80%"));
-        let mut v = MenuState { screen: MenuScreen::OptionsVideo, selected: 0 };
+        let v = MenuState { screen: MenuScreen::OptionsVideo, selected: 0 };
         assert!(v.rows(&ctx)[0].contains("24 MB"));
     }
 }
