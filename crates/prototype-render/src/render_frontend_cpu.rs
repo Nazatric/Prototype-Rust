@@ -268,10 +268,17 @@ pub fn render_sprites_cpu(
                 for x in minx..=maxx {
                     let px = x as f32 + 0.5;
                     let py = y as f32 + 0.5;
-                    let w0 = ((b.0 - a.0) * (py - a.1) - (px - a.0) * (b.1 - a.1)) * inv;
-                    let w1 = ((c.0 - b.0) * (py - b.1) - (px - b.0) * (c.1 - b.1)) * inv;
-                    let w2 = ((a.0 - c.0) * (py - c.1) - (px - c.0) * (a.1 - c.1)) * inv;
-                    if w0 < -1e-6 || w1 < -1e-6 || w2 < -1e-6 {
+                    // Barycentrics paired to the RIGHT corners — wa =
+                    // weight of a, wb = weight of b, wc = weight of c
+                    // (the proven art-world edge-function convention).
+                    // BLOCK-104 FIX: these were cyclically SHIFTED
+                    // against the uv corners (w0 was actually the
+                    // weight of c, etc), which sheared every textured
+                    // sprite diagonally.
+                    let wa = ((c.0 - b.0) * (py - b.1) - (c.1 - b.1) * (px - b.0)) * inv;
+                    let wb = ((a.0 - c.0) * (py - c.1) - (a.1 - c.1) * (px - c.0)) * inv;
+                    let wc = ((b.0 - a.0) * (py - a.1) - (b.1 - a.1) * (px - a.0)) * inv;
+                    if wa < -1e-6 || wb < -1e-6 || wc < -1e-6 {
                         continue;
                     }
                     let col = if sprite.textured {
@@ -282,8 +289,8 @@ pub fn render_sprites_cpu(
                             [0, 1, 2] => (uvs[0], uvs[1], uvs[2]),
                             _ => (uvs[0], uvs[2], uvs[3]),
                         };
-                        let u = uv_a[0] * w0 + uv_b[0] * w1 + uv_c[0] * w2;
-                        let v = uv_a[1] * w0 + uv_b[1] * w1 + uv_c[1] * w2;
+                        let u = uv_a[0] * wa + uv_b[0] * wb + uv_c[0] * wc;
+                        let v = uv_a[1] * wa + uv_b[1] * wb + uv_c[1] * wc;
                         let t = match texture {
                             Some((bytes, tw, th)) => {
                                 sample_clamp_bilinear(bytes, tw, th, u, v)

@@ -1,0 +1,9 @@
+# Curated real-game frontend strings from art\hud\fe_textbible.p3d
+# (block 106: extracted from the REAL text bible, not procedural placeholders)
+#
+# MENU_ITEMS:
+MENU_ITEM ATTACK
+#
+# REAL_SENTENCES:
+SENTENCE Would you still like to exit?
+SENTENCE Xbox 360 Controller

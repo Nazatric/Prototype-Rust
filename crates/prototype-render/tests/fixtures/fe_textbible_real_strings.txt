@@ -1,0 +1,42 @@
+# 40 real game strings extracted from art\hud\fe_textbible.p3d
+# block 106 — REAL game data, not procedural placeholders.
+MAIN MENU
+NEW GAME
+CONTINUE
+PAUSE GAME
+OPTIONS
+CONTROLS
+AUDIO
+VIDEO
+CREDITS
+QUIT
+ATTACK
+GRAB
+JUMP
+WALK
+RUN
+CLAWS
+HAMMERFIST
+MUSCLEMASS
+WHIPFIST
+ARMOR
+CHAMELEONIC SKIN
+SHIELD
+DISGUISE
+BLADE
+INFECTED VISION
+THERMAL VISION
+WEB OF INTRIGUE
+MILITARY
+INFECTED
+HELICOPTER
+TANK
+Xbox 360 Controller
+Difficulty
+WOI
+Saving...
+Alex Mercer
+Manhattan
+Hive
+Base
+Consume

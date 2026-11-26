@@ -1,0 +1,109 @@
+# Pure3D chunk type IDs — the official reference, sourced from
+# github.com/tigercat2000/p3dtools (which credits "LucasStuff.Radical"
+# and the Simpsons Hit & Run source code leak — the same Pure3D engine
+# variant Prototype 2009 uses, with Prototype-specific extensions for
+# the 0x00121112/0x00121119 channel IDs).
+#
+# Block 107: cross-checked against alex.p3d byte-level analysis.
+#
+# Format: HEX_CHUNK_ID = NAME
+#
+# Selected entries (full table at https://github.com/tigercat2000/p3dtools/
+# blob/main/crates/p3dparse/src/chunk/type_identifiers.rs):
+0x00001000 = Grid
+0x00001001 = GridCell
+0x00002000 = P3DMatrix
+0x00002006 = P3DPosition
+0x00003062 = P3DFont
+0x00003063 = P3DFontGlyphs
+0x00003064 = P3DTextureFont
+0x00003065 = P3DTextureGlyph
+0x00003066 = P3DImageFont
+0x00003067 = P3DImageGlyph
+0x00010000 = Mesh
+0x00010001 = Skin
+0x00010020 = PrimGroup
+0x00011000 = Shader
+0x00011001 = ShaderDefinition
+0x00011002 = ShaderTextureParam
+0x00013000 = Light
+0x00014000 = Locator
+0x00018000 = FrontendProject
+0x00018001 = FrontendScreen
+0x00018002 = FrontendPage
+0x00018003 = FrontendLayer
+0x00018004 = FrontendGroup
+0x00018005 = FrontendMovie
+0x00018006 = FrontendMultiSprite
+0x00018007 = FrontendMultiText
+0x00018008 = FrontendPure3DObject
+0x00018009 = FrontendPolygon
+0x0001800A = FrontendSprite
+0x0001800B = FrontendStringTextBible
+0x0001800C = FrontendStringHardCoded
+0x0001800D = FrontendTextBible
+0x0001800E = FrontendLanguage
+0x00018100 = FrontendImageResource
+0x00018101 = FrontendPure3DResource
+0x00018102 = FrontendOldResourceTextStyle
+0x00018103 = FrontendOldResourceTextBible
+0x00018104 = FrontendTextStyleResource
+0x00018105 = FrontendTextBibleResource
+0x00019000 = Texture
+0x00019001 = Image
+0x00019002 = ImageData
+0x00019003 = ImageFilename
+0x00019004 = VolumeImage
+0x00019005 = Sprite
+0x00021000 = Expression
+0x00021001 = ExpressionGroup
+0x00021002 = ExpressionMixer
+0x00022000 = TextureFont
+0x00022001 = TextureGlyphList
+0x00022002 = ImageFont
+0x00022003 = ImageGlyphList
+0x00023000 = Skeleton2
+0x00023001 = SkeletonJoint2
+0x00023002 = SkeletonPartition
+0x00023003 = SkeletonLimb
+0x00120100 = Scenegraph
+0x00120101 = OldScenegraphRoot
+0x00120102 = OldScenegraphBranch
+0x00120103 = OldScenegraphTransform
+0x00120104 = OldScenegraphVisibility
+0x0012010B = ScenegraphRoot
+0x0012010C = ScenegraphBranch
+0x0012010D = ScenegraphTransform
+0x0012010F = ScenegraphDrawable
+0x00121000 = Animation
+0x00121001 = AnimationGroup
+0x00121002 = AnimationGroupList
+0x00121004 = AnimationSize
+0x00121006 = AnimationHeader
+0x00121007 = AnimationChannelCount
+0x00121100 = Float1Channel
+0x00121101 = Float2Channel
+0x00121102 = Vector1DOFChannel
+0x00121103 = Vector2DOFChannel
+0x00121104 = Vector3DOFChannel
+0x00121105 = QuaternionChannel
+0x00121106 = StringChannel
+0x00121107 = EntityChannel
+0x00121108 = BoolChannel
+0x00121109 = ColourChannel
+0x0012110A = EventChannel
+0x0012110B = EventObjectChannel
+0x0012110C = EventObjectDataChannel
+0x0012110D = EventObjectDataImageChannel
+0x0012110E = IntChannel
+0x0012110F = QuaternionFormatChannel
+0x00121110 = ChannelInterpolationMode
+0x00121111 = CompressedQuaternionChannel
+# Prototype 2009's Pure3D variant uses these (NOT in the p3dtools table):
+0x00121112 = Prototype_ROT_channel
+0x00121119 = Prototype_TRAN_channel
+0x00121114 = Prototype_ROT_compact
+0x00121400 = AnimationListVector
+0x00121401 = AnimationListVector2
+0x00121402 = AnimationKeyFrame
+0x00122000 = SortOrder
