@@ -85,7 +85,7 @@ use prototype_render::wgpu_backend::{
 use crate::asset_folder;
 use crate::boot::{boot_summary, prepare_programs, BootReport};
 use crate::game_files::{self, GameFileSet, ScanError};
-use crate::movie::{find_boot_movie, MoviePlayerState};
+use crate::movie::{find_boot_movie, MoviePlayerState, MovieWorker};
 // Block 55 (NEXT-UP (a)): the boot movie's audio DEVICE edge — the
 // live CPAL stream draining the player's shared ring.  Compiles (and
 // is exercised) only with `--features audio-cpal`; without it the app
@@ -807,14 +807,37 @@ pub struct App {
     /// start to the post-borrow tail (the arm holds the renderer
     /// borrow — the same defer pattern as `pending_nis_mix_stop`).
     pending_frontend_music_start: bool,
-    /// Block 54: the boot-path movie player (None when no movie archive
-    /// was found, it failed to open, or playback is over/skipped).
-    movie: Option<MoviePlayerState>,
+    /// Block 120: the boot movie's DECODE WORKER (None when no movie
+    /// archive was found, it failed to open, or playback is
+    /// over/skipped).  The decode runs on its own thread — the main
+    /// thread only samples `latest()` (the ANR fix: a wedged
+    /// `next_frame` can no longer freeze Android's UI thread; the
+    /// worker's watchdog ends a stuck movie instead).
+    movie_worker: Option<MovieWorker>,
     /// Block 54: the movie's GPU side (quad + video texture + bind
-    /// group).  Present exactly while `movie` is.
+    /// group).  Present exactly while `movie_worker` is.
     movie_gpu: Option<MovieGpu>,
-    /// Block 54: logged-once flag for the movie's first decoded frame.
-    movie_logged: bool,
+    /// Block 120: the publish seq of the frame currently uploaded to
+    /// `movie_gpu` — a new frame uploads once, not per redraw.
+    movie_upload_seq: u64,
+    /// Block 120: the REAL menu screens parsed from the user's own
+    /// `art\hud\*.gfx` members (the worker extracts, `parse_gfx`
+    /// decodes): `protostart.gfx` + `protomainmenu.gfx` this block.
+    /// Keyed by the real member path string.
+    real_screens: std::collections::HashMap<
+        &'static str,
+        prototype_render::frontend_gfx::GfxScreen,
+    >,
+    /// Block 120: the menu art's GPU side — one fullscreen texture the
+    /// parsed real screen renders into, rebuilt when the rendered size
+    /// changes (rotation, resize).  Present while a real screen is up.
+    menu_gpu: Option<MovieGpu>,
+    /// Block 120: the size `menu_gpu` was built for.
+    menu_gpu_size: Option<(u32, u32)>,
+    /// Block 120: the rendered real-menu art cache — `(screen name,
+    /// size, RGBA)`.  The art is static: raster + upload once per
+    /// (screen, size); every later frame re-presents the texture.
+    menu_art_cache: Option<(&'static str, [u32; 2], Vec<u8>)>,
     /// Block 55 (NEXT-UP (a)): the boot movie's audio DEVICE edge
     /// (feature `audio-cpal`) — opened over THE ring the player writes
     /// at movie open, held through the tail drain after the movie ends,
@@ -875,6 +898,10 @@ struct CpuBootArtifacts {
     pm_rep: crate::meshes::PairedMeshReport,
     /// The boot movie candidate (if the user's archives carry one).
     movie: Option<crate::movie::BootMovie>,
+    /// Block 120: the extracted REAL menu screens' raw `.gfx` bytes
+    /// (the members the census proves present; empty when absent —
+    /// `finish_boot` parses and journals each one).
+    gfx: Vec<(&'static str, Vec<u8>)>,
 }
 
 /// The GPU bring-up stages (block 103) — one per loop iteration.
@@ -1146,6 +1173,25 @@ fn cpu_boot_work(set: GameFileSet, tx: mpsc::Sender<Result<CpuBootArtifacts, Str
         boot_log::stage("cpu: boot movie scan");
         let movie = find_boot_movie(&set.rcf_archives);
 
+        // Block 120: extract the REAL menu screens' members (the press
+        // start splash + the main menu).  STREAMING: one directory
+        // parse + two member reads — the block-107 census's
+        // whole-archive RAM reads are gone (menu_assets docs); this
+        // stage costs milliseconds, not the ~11 s the RAM-heavy census
+        // took.
+        boot_log::stage("cpu: real menu art extraction");
+        let gfx = crate::menu_assets::extract_screens(
+            &set.rcf_archives,
+            crate::menu_assets::RENDER_SCREENS,
+        );
+        let gfx_kb: usize = gfx.iter().map(|(_, b)| b.len()).sum::<usize>() / 1024;
+        boot_log::bootlog(&format!(
+            "menu art: {}/{} real screen(s) extracted ({} KB)",
+            gfx.len(),
+            crate::menu_assets::RENDER_SCREENS.len(),
+            gfx_kb
+        ));
+
         CpuBootArtifacts {
             set,
             report,
@@ -1155,6 +1201,7 @@ fn cpu_boot_work(set: GameFileSet, tx: mpsc::Sender<Result<CpuBootArtifacts, Str
             pair_rep,
             pm_rep,
             movie,
+            gfx,
         }
     }));
     match outcome {
@@ -1261,9 +1308,13 @@ impl App {
             ambience_unit_tag: None,
             pending_frontend_music_start: false,
             pending_gameplay_event: None,
-            movie: None,
+            movie_worker: None,
             movie_gpu: None,
-            movie_logged: false,
+            movie_upload_seq: 0,
+            real_screens: std::collections::HashMap::new(),
+            menu_gpu: None,
+            menu_gpu_size: None,
+            menu_art_cache: None,
             #[cfg(feature = "audio-cpal")]
             movie_audio: None,
             #[cfg(feature = "audio-cpal")]
@@ -1294,9 +1345,9 @@ impl App {
             self.stop_nis();
             return;
         }
-        if let Some(state) = self.movie.as_mut() {
+        if let Some(worker) = self.movie_worker.as_ref() {
             log::info!("boot movie: skipped by user input");
-            state.skip();
+            worker.skip();
         }
         // Block 67: a skipped movie's NIS-mix unit (when one runs)
         // is cut with the picture — the modal cutscene ends here.
@@ -1396,7 +1447,10 @@ impl App {
                 .movie_audio
                 .as_ref()
                 .map(|e| {
-                    crate::movie::movie_audio_edge_should_close(self.movie.is_some(), e.tail_drained())
+                    crate::movie::movie_audio_edge_should_close(
+                        self.movie_worker.is_some(),
+                        e.tail_drained(),
+                    )
                 })
                 .unwrap_or(false);
             if close {
@@ -2547,8 +2601,6 @@ impl App {
             self.world_trace = 1;
             crate::boot_log::bootlog("world trace: enter requested");
             self.status_render = false;
-            self.world_trace = 1;
-            crate::boot_log::bootlog("world trace: enter requested");
         } else {
             self.menu.screen = crate::menu::MenuScreen::Loading;
         }
@@ -2630,18 +2682,17 @@ impl App {
     /// Block 107: build + render one menu/UI frame (the status surface).
     /// `tint` is the phase colour used as the clear under the menu field.
     fn draw_menu_frame(&mut self, tint: [f64; 4]) {
-        // Auto-enter: the loading screen hands to the world the moment
-        // the boot lands (the "boot directly into the game" contract).
+        // Auto-enter: block 120 — the loading screen hands to the REAL
+        // start screen the moment the boot lands (a played movie hands
+        // there too, through its end path).  The world waits for PLAY:
+        // the real game's flow — start screen → main menu → world.
         if self.menu.screen == crate::menu::MenuScreen::Loading
             && matches!(self.boot_phase, BootPhase::Done)
         {
-            self.menu.screen = crate::menu::MenuScreen::InGame;
-            self.in_world = true;
-            self.status_render = false;
-            if let Some(w) = &self.window {
-                w.request_redraw();
-            }
-            return;
+            self.menu.screen = crate::menu::MenuScreen::Start;
+            self.selected_reset();
+            boot_log::bootlog("frontend: boot landed — the REAL start screen takes over");
+            // status_render stays true — this frame draws the menu.
         }
         let Some((w, h)) = self
             .renderer
@@ -2676,6 +2727,66 @@ impl App {
             crate::menu::menu_draw(&self.menu, &ctx, atlas, &mut list, &mut hits);
         }
         self.menu_hits = hits;
+        // Block 120: the REAL screens' art IS the menu — the parsed
+        // `.gfx` screen renders UNDER the shell's rows (the rows stay
+        // for navigation until the real fonts land; the hit regions
+        // above stay fresh either way).  The raster + texture upload
+        // happen once per (screen, size); every later frame just
+        // re-presents the cached texture with the fresh row list.
+        let real_name = match self.menu.screen {
+            crate::menu::MenuScreen::Start => Some(crate::menu_assets::RENDER_SCREENS[0]),
+            crate::menu::MenuScreen::Main => Some(crate::menu_assets::RENDER_SCREENS[1]),
+            _ => None,
+        };
+        let cached = self
+            .menu_art_cache
+            .as_ref()
+            .filter(|(name, size, _)| Some(*name) == real_name && *size == [w, h])
+            .map(|(_, _, rgba)| rgba.clone());
+        let frame = match cached {
+            Some(rgba) => Some(rgba),
+            None => real_name
+                .and_then(|name| self.real_screens.get(name))
+                .and_then(|s| prototype_render::frontend_gfx::render_gfx_first_frame(s, w, h).ok())
+                .map(|f| f.rgba),
+        };
+        if let Some(rgba) = frame {
+            let fresh = self
+                .menu_art_cache
+                .as_ref()
+                .map(|(name, size, _)| Some(*name) == real_name && *size == [w, h])
+                != Some(true);
+            if fresh {
+                self.menu_art_cache = real_name.map(|name| (name, [w, h], rgba.clone()));
+            }
+            if let Some(r) = self.renderer.as_mut() {
+                if self.menu_gpu_size != Some((w, h)) {
+                    let texture = r.create_video_texture(w, h, "real menu");
+                    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                    let quad = r.create_video_quad(r.surface_format());
+                    let bind_group = r.create_video_bind_group(&quad, &view);
+                    self.menu_gpu = Some(MovieGpu {
+                        quad,
+                        texture,
+                        view,
+                        bind_group,
+                    });
+                    self.menu_gpu_size = Some((w, h));
+                }
+                let gpu = self.menu_gpu.as_ref().expect("just built");
+                if fresh {
+                    if let Err(e) = r.upload_video_frame(&gpu.texture, &rgba) {
+                        log::warn!("real menu: art upload failed: {e}");
+                    }
+                }
+                match r.render_video_frame_with_ui(&gpu.quad, &gpu.bind_group, &list) {
+                    Ok(()) => return,
+                    Err(e) => {
+                        log::warn!("real menu frame failed: {e:?} — the shell takes over");
+                    }
+                }
+            }
+        }
         if let Some(r) = self.renderer.as_mut() {
             if let Err(e) = r.render_frame_with_ui(tint, &[], &list) {
                 log::warn!("menu frame failed: {e:?}");
@@ -3206,9 +3317,11 @@ impl App {
         // 5. Block 54: the BOOT-PATH MOVIE — find a real Bink member in
         //    the user's movie archive(s) and open the streaming player
         //    over its RCF span.  Every failure here is non-fatal.
-        self.movie = None;
+        self.movie_worker = None;
         self.movie_gpu = None;
-        self.movie_logged = false;
+        self.movie_upload_seq = 0;
+        self.menu_gpu = None;
+        self.menu_gpu_size = None;
         let format = r.surface_format();
         match &art.movie {
             Some(m) => match MoviePlayerState::open(&m) {
@@ -3230,6 +3343,18 @@ impl App {
                         state.fps().1,
                         state.audio_channels(),
                     );
+                    // Block 120: the journal line the old boot never
+                    // wrote — the movie's OPEN result was invisible to
+                    // boot-log.txt (log::info does not reach the file).
+                    boot_log::bootlog(&format!(
+                        "movie: opened {:#010x} ({}x{}, {} frame(s) at {}/{}) — decoding on the worker thread",
+                        m.member_hash,
+                        mw,
+                        mh,
+                        state.frame_count(),
+                        state.fps().0,
+                        state.fps().1,
+                    ));
                     self.movie_gpu = Some(MovieGpu {
                         quad,
                         texture,
@@ -3238,16 +3363,59 @@ impl App {
                     });
                     // Block 55: the audio DEVICE edge over THE ring this
                     // player writes.  Non-fatal: device-less hosts play
-                    // silent, exactly as before.
+                    // silent, exactly as before.  Opened BEFORE the move:
+                    // the ring Arc survives the worker handoff.
                     #[cfg(feature = "audio-cpal")]
                     self.open_movie_audio(&state);
-                    self.movie = Some(state);
+                    // Block 120: the ANR fix — the player lives on the
+                    // decode worker now; the main thread samples it.
+                    self.movie_worker = Some(MovieWorker::spawn(state));
                 }
-                Err(e) => log::warn!("boot movie: open failed ({e}) — playing without it"),
+                Err(e) => {
+                    log::warn!("boot movie: open failed ({e}) — playing without it");
+                    boot_log::bootlog(&format!("movie: open FAILED ({e}) — frontend next"));
+                }
             },
-            None => log::info!(
-                "boot movie: none found (no *movie*.rcf with a bik member in the asset folder)"
-            ),
+            None => {
+                log::info!(
+                    "boot movie: none found (no *movie*.rcf with a bik member in the asset folder)"
+                );
+                boot_log::bootlog("movie: none found — frontend next");
+            }
+        }
+
+        // Block 120: parse the REAL menu screens the worker extracted
+        // (the user's own art\hud\*.gfx members).  A parse failure
+        // keeps the shell (journal names it); a success journals the
+        // screen's contents — the on-device census for what Scaleform
+        // carried.
+        self.real_screens.clear();
+        for (name, bytes) in &art.gfx {
+            match prototype_render::frontend_gfx::parse_gfx(bytes) {
+                Ok(screen) => {
+                    let unrendered = if screen.unrendered.is_empty() {
+                        "none".to_string()
+                    } else {
+                        screen
+                            .unrendered
+                            .iter()
+                            .map(|(c, n)| format!("tag {c}×{n}"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    };
+                    boot_log::bootlog(&format!(
+                        "menu: real screen {name} parsed — {} image(s), {} placement(s), unrendered: {unrendered}",
+                        screen.images.len(),
+                        screen.placements.len(),
+                    ));
+                    self.real_screens.insert(*name, screen);
+                }
+                Err(e) => {
+                    boot_log::bootlog(&format!(
+                        "menu: real screen {name} PARSE FAILED ({e}) — the shell stays"
+                    ));
+                }
+            }
         }
 
         // 6. Block 57: the GAMEPLAY audio device edge — opened once per
@@ -3257,7 +3425,7 @@ impl App {
 
         // 7. Block 68: when NO boot movie plays, the FRONTEND is what
         //    the user sees — its attract music starts here.
-        if self.movie.is_none() {
+        if self.movie_worker.is_none() {
             if let Err(e) = self.enter_frontend(1.0) {
                 log::debug!("frontend music: {e}");
             }
@@ -3366,8 +3534,10 @@ impl App {
         // player state goes with it (the next boot re-finds and re-opens
         // the movie — the boot movie replays after a resume, like every
         // other boot-time scan).
-        self.movie = None;
+        self.movie_worker = None;
         self.movie_gpu = None;
+        self.menu_gpu = None;
+        self.menu_gpu_size = None;
         // Block 55: the movie's device stream goes with the GPU state
         // (the surface is invalid; a re-boot re-opens everything).
         self.stop_movie_audio();
@@ -3604,101 +3774,83 @@ impl ApplicationHandler for App {
                         // world draw below runs this frame.
                     }
 
-                    // --- block 54: the boot movie owns the frame while
-                    //     it plays -------------------------------------
-                    //     Wall-clock-paced decode → RGBA upload → the
-                    //     fullscreen quad; track 0's PCM lands in the
-                    //     ring.  Any failure drops the movie and falls
-                    //     through to the world draw THIS frame — the
-                    //     boot path degrades, never dies.
-                    if let Some(state) = self.movie.as_mut() {
-                        match state.advance(Instant::now()) {
-                            Ok(adv) => {
-                                if adv.frames_decoded > 0 {
-                                    if let Some(gpu) = &self.movie_gpu {
-                                        if let Err(e) =
-                                            r.upload_video_frame(&gpu.texture, state.rgba())
-                                        {
-                                            log::warn!("boot movie: frame upload failed: {e}");
-                                        }
+                    // --- block 54/120: the boot movie owns the frame
+                    //     while it plays -----------------------------
+                    //     The DECODE runs on the movie worker now (the
+                    //     ANR fix) — the main thread samples the
+                    //     worker's latest frame, uploads it ONCE per
+                    //     publish seq, and presents the fullscreen
+                    //     quad.  A wedged decode ends the movie via the
+                    //     worker's watchdog; it can never freeze THIS
+                    //     loop again.  Any surface error tears down as
+                    //     before — the boot path degrades, never dies.
+                    if let Some(worker) = self.movie_worker.take() {
+                        if let Some((seq, rgba)) = worker.latest() {
+                            if seq != self.movie_upload_seq {
+                                if let Some(gpu) = &self.movie_gpu {
+                                    if let Err(e) =
+                                        r.upload_video_frame(&gpu.texture, &rgba)
+                                    {
+                                        log::warn!("boot movie: frame upload failed: {e}");
                                     }
                                 }
-                                if !self.movie_logged && adv.frames_decoded > 0 {
-                                    log::info!(
-                                        "boot movie: playing — {} frame(s) decoded, ring {} buffered / {} dropped (s16, track 0); any input skips",
-                                        state.frames_done(),
-                                        state.ring_handle().lock().unwrap_or_else(|e| e.into_inner()).buffered(),
-                                        state.audio_dropped(),
-                                    );
-                                    self.movie_logged = true;
-                                }
-                                if adv.ended {
-                                    log::info!(
-                                        "boot movie: finished after {} frame(s), {} audio sample(s) fed ({} dropped) — the world scene takes over",
-                                        state.frames_done(),
-                                        state.audio_samples_written(),
-                                        state.audio_dropped(),
-                                    );
-                                    // Block 58: the movie→world transition
-                                    // fires the DESIGN wipe mapping (the
-                                    // frontend transition sound) through
-                                    // the gameplay ring.  The fire needs
-                                    // `&mut self` and this arm holds the
-                                    // renderer borrow — DEFER it to the
-                                    // post-borrow tail of this frame.
-                                    self.pending_gameplay_event =
-                                        Some(GameplayAudioEvent::BootMovieEnded);
-                                    // Block 67: when a NIS-mix unit rides
-                                    // this movie slot (the future NIS
-                                    // movie path), the mix ends with the
-                                    // picture.  The cut itself is a
-                                    // &mut self method and this arm holds
-                                    // the renderer borrow — DEFER it to
-                                    // the post-borrow tail.  A boot
-                                    // movie's own container audio needs
-                                    // no stop — the tail drain owns it.
-                                    self.pending_nis_mix_stop = true;
-                                    // Block 68: the picture ending IS the
-                                    // frontend appearing — its attract
-                                    // music starts in the same deferred
-                                    // tail (a &mut self serve, same
-                                    // borrow).
-                                    self.pending_frontend_music_start = true;
-                                    self.movie = None;
-                                    self.movie_gpu = None;
-                                    // fall through: the world draw below
-                                    // paints THIS frame (no black gap).
-                                } else {
-                                    if let Some(gpu) = &self.movie_gpu {
-                                        match r.render_video_frame(&gpu.quad, &gpu.bind_group) {
-                                            Ok(()) => return,
-                                            Err(e) => {
-                                                log::warn!("boot movie frame error: {e:?}");
-                                                if matches!(
-                                                    e,
-                                                    wgpu::SurfaceError::Lost
-                                                        | wgpu::SurfaceError::Outdated
-                                                ) {
-                                                    self.teardown();
-                                                }
-                                                return;
-                                            }
-                                        }
-                                    }
-                                    // No GPU side (cannot happen — the
-                                    // two fields move together, but the
-                                    // types force the fall-through): the
-                                    // world draw below runs.
-                                }
+                                self.movie_upload_seq = seq;
                             }
-                            Err(e) => {
-                                log::warn!(
-                                    "boot movie: decode failed ({e}) — dropping it, the world scene takes over"
+                        }
+                        if worker.is_ended() {
+                            if worker.is_failed() {
+                                boot_log::bootlog(
+                                    "movie: worker reported a decode FAILURE — frontend next",
                                 );
-                                self.movie = None;
-                                self.movie_gpu = None;
-                                // fall through to the world draw below
                             }
+                            // Block 58/67/68: the SAME deferred
+                            // transitions the old end path fired — the
+                            // wipe sound, the NIS-mix cut, the attract
+                            // music — all &mut self serves, all
+                            // deferred past the renderer borrow.
+                            self.pending_gameplay_event =
+                                Some(GameplayAudioEvent::BootMovieEnded);
+                            self.pending_nis_mix_stop = true;
+                            self.pending_frontend_music_start = true;
+                            self.movie_gpu = None;
+                            // Block 120 FLOW: the movie's end hands to
+                            // the REAL start screen (the user's own
+                            // protostart.gfx art) — not straight into
+                            // the world.  The status surface presents
+                            // from the next frame; this one falls
+                            // through to the world draw (no black gap).
+                            self.menu.screen = crate::menu::MenuScreen::Start;
+                            // (selected_reset() is a &mut self call and
+                            // this arm holds the renderer borrow — the
+                            // one-line body inlines instead.)
+                            self.menu.selected = 0;
+                            self.status_render = true;
+                            boot_log::bootlog("frontend: boot movie done — the REAL start screen takes over");
+                            // The worker drops here (skip flag + join).
+                        } else if let Some(gpu) = &self.movie_gpu {
+                            match r.render_video_frame(&gpu.quad, &gpu.bind_group) {
+                                Ok(()) => {
+                                    self.movie_worker = Some(worker);
+                                    return;
+                                }
+                                Err(e) => {
+                                    log::warn!("boot movie frame error: {e:?}");
+                                    if matches!(
+                                        e,
+                                        wgpu::SurfaceError::Lost
+                                            | wgpu::SurfaceError::Outdated
+                                    ) {
+                                        self.teardown();
+                                    }
+                                    self.movie_worker = Some(worker);
+                                    return;
+                                }
+                            }
+                        } else {
+                            // No GPU side (cannot happen — the fields
+                            // move together, but the types force the
+                            // fall-through): the world draw below runs.
+                            self.movie_worker = Some(worker);
                         }
                     }
 
@@ -4125,6 +4277,11 @@ impl ApplicationHandler for App {
                             drawn_boxes,
                             drawn_paired
                         );
+                        // Block 120: the journal line the freeze hunt
+                        // needed — the world's FIRST frame is on the
+                        // screen (the old journal went silent right
+                        // here).
+                        boot_log::bootlog("world: first frame drawn");
                         self.logged_first_frame = true;
                     }
 

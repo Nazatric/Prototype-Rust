@@ -102,6 +102,13 @@ pub mod cutscene_walkthrough;
 /// reference for the loader's frontend menu/HUD path (NEXT-UP #7's
 /// last piece: a frontend render test).
 pub mod render_frontend_cpu;
+/// Block 120 — the REAL Scaleform `.gfx` menu screens: the SWF
+/// container parser (the `art\hud\*.gfx` members the boot census
+/// proves present on-device) + the first-frame CPU renderer through
+/// the REAL frontend shader contract.  Bitmaps (DefineBitsLossless2)
+/// and placements render; shapes/fonts/ActionScript are recorded and
+/// skipped — honest scopes, never guesses.
+pub mod frontend_gfx;
 #[cfg(feature = "render-wgpu")]
 pub mod wgpu_backend;
 

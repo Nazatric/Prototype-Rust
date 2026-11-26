@@ -207,7 +207,32 @@ fn sample_clamp_bilinear(
 ///   clear colour).
 pub fn render_sprites_cpu(
     sprites: &[FrontendSprite],
-    texture: Option<(&[u8], u32, u32)>,
+    texture: Option<TexRef<'_>>,
+    width: u32,
+    height: u32,
+    clear: [f32; 4],
+) -> Result<FrontendFrame, String> {
+    // One shared texture for every sprite (the classic single-image
+    // frontend path).  Layered real-screen art rides the per-sprite
+    // variant below.
+    let textures: Vec<Option<TexRef<'_>>> = sprites.iter().map(|_| texture).collect();
+    render_sprites_textured(sprites, &textures, width, height, clear)
+}
+
+/// One RGBA8 texture reference `(bytes, width, height)` — the shape
+/// the single-texture path already took, now PER SPRITE so a real
+/// Scaleform screen's layered images can ride ONE draw list
+/// (block 120: the `.gfx` screens' extracted bitmaps).
+pub type TexRef<'a> = (&'a [u8], u32, u32);
+
+/// The per-sprite-texture variant of [`render_sprites_cpu`]: sprite i
+/// samples `textures[i]` (`None` is valid only while the sprite is
+/// untextured).  Everything else — the shader-pair constant
+/// semantics, the BLOCK-104 barycentric corner pairing, bilinear
+/// sampling, the fill/full-bbox contracts — is byte-identical.
+pub fn render_sprites_textured(
+    sprites: &[FrontendSprite],
+    textures: &[Option<TexRef<'_>>],
     width: u32,
     height: u32,
     clear: [f32; 4],
@@ -215,11 +240,15 @@ pub fn render_sprites_cpu(
     if width == 0 || height == 0 {
         return Err("empty render target".into());
     }
+    if sprites.len() != textures.len() {
+        return Err("sprite/texture count mismatch".into());
+    }
     let mut fb = vec![clear; (width * height) as usize];
     let mut drawn = 0usize;
     let mut clipped = 0usize;
 
-    for sprite in sprites {
+    for (sprite, texture) in sprites.iter().zip(textures.iter()) {
+        let texture = *texture;
         // Two triangles: (0,1,2) and (0,2,3) of the clip-space quad.
         // For each vertex: uv = shader_uv(object pos).  The frontend
         // sprites are screen-space; object space IS clip space here

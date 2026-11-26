@@ -588,6 +588,203 @@ impl MovieAudioEdge {
 }
 
 // ---------------------------------------------------------------------------
+// Block 120: the decode WORKER — the main thread never touches
+// next_frame again
+// ---------------------------------------------------------------------------
+
+/// How long the worker may produce no frame before the watchdog ends
+/// the movie (the journal line names it).  A wedged demux or span read
+/// on the decode thread must degrade to "movie over", never to a
+/// frozen app.
+const MOVIE_WATCHDOG: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The shared slot the worker publishes into (the main thread samples
+/// it once per redraw — an `Arc` clone, never a frame copy).
+struct MovieWorkerShared {
+    seq: std::sync::atomic::AtomicU64,
+    latest: Mutex<Option<Arc<Vec<u8>>>>,
+    last_frame: Mutex<Instant>,
+}
+
+impl Default for MovieWorkerShared {
+    fn default() -> Self {
+        Self {
+            seq: Default::default(),
+            latest: Default::default(),
+            // "now" — the watchdog clock starts at spawn (a movie that
+            // never produces its first frame still cannot wedge us).
+            last_frame: Mutex::new(Instant::now()),
+        }
+    }
+}
+
+/// Block 120 — the boot movie's decode worker.  THE ANR FIX.
+///
+/// Block 116 bounded the decode LOOP (a 40 ms wall-clock budget + the
+/// stuck-demux guard), but ONE `next_frame()` call — demux, span
+/// reads, decode — was still free to block its caller forever, and the
+/// caller was the ANDROID MAIN THREAD (native-activity runs winit's
+/// event loop on it): a wedged span read froze input dispatch and
+/// popped "app isn't responding", with the journal ending at
+/// BOOT COMPLETE (the user's 2026-11-26 log — three boots, every one
+/// of them silent after it).  The decode now runs HERE, on its own
+/// thread; the main thread's whole surface is `latest()` (a lock + an
+/// `Arc` clone) and atomic end/skip flags.  A wedged decode ends the
+/// MOVIE (the watchdog); the app stays live.
+pub struct MovieWorker {
+    shared: Arc<MovieWorkerShared>,
+    skip: Arc<std::sync::atomic::AtomicBool>,
+    ended: Arc<std::sync::atomic::AtomicBool>,
+    failed: Arc<std::sync::atomic::AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl MovieWorker {
+    /// Move a freshly-opened player onto the decode thread.  Open the
+    /// AUDIO edge from [`MoviePlayerState::ring_handle`] FIRST — the
+    /// ring Arc stays valid through the move (the worker feeds it from
+    /// its own thread; the device edge reads it from the device
+    /// callback thread, exactly the SharedRing handoff contract).
+    pub fn spawn(state: MoviePlayerState) -> Self {
+        let shared = Arc::new(MovieWorkerShared::default());
+        let skip = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ended = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let first = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let handle = std::thread::Builder::new()
+            .name("movie-decode".into())
+            .spawn({
+                let shared = shared.clone();
+                let skip = skip.clone();
+                let ended = ended.clone();
+                let failed = failed.clone();
+                let first = first.clone();
+                move || worker_loop(state, shared, skip, ended, failed, first)
+            })
+            .ok();
+        Self { shared, skip, ended, failed, handle }
+    }
+
+    /// The main thread's skip path (any touch/key during playback —
+    /// the same DESIGN binding as before, now just a flag).
+    pub fn skip(&self) {
+        self.skip
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The freshest decoded frame: `(publish seq, RGBA)`.  `None`
+    /// before the first frame lands; the seq lets the caller skip
+    /// re-uploads of an unchanged frame.
+    pub fn latest(&self) -> Option<(u64, Arc<Vec<u8>>)> {
+        let seq = self
+            .shared
+            .seq
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let g = self.shared.latest.lock().ok()?;
+        Some((seq, g.as_ref()?.clone()))
+    }
+
+    /// Playback over (skipped, exhausted, failed, or watchdog-fired)?
+    pub fn is_ended(&self) -> bool {
+        self.ended
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The decode errored (vs a clean end) — the caller journals it.
+    pub fn is_failed(&self) -> bool {
+        self.failed
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl Drop for MovieWorker {
+    fn drop(&mut self) {
+        self.skip
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+/// The decode thread's whole life: advance within the PTS pacing, give
+/// each decoded frame's RGBA to the shared slot, watch the clock, end
+/// the movie on ANY stuck path — cleanly, on error, or by watchdog.
+fn worker_loop(
+    mut state: MoviePlayerState,
+    shared: Arc<MovieWorkerShared>,
+    skip: Arc<std::sync::atomic::AtomicBool>,
+    ended: Arc<std::sync::atomic::AtomicBool>,
+    failed: Arc<std::sync::atomic::AtomicBool>,
+    first: Arc<std::sync::atomic::AtomicBool>,
+) {
+    use std::sync::atomic::Ordering;
+    let started = Instant::now();
+    let mut frames = 0usize;
+    loop {
+        if skip.load(Ordering::Relaxed) {
+            state.skip();
+        }
+        match state.advance(Instant::now()) {
+            Ok(adv) => {
+                if adv.frames_decoded > 0 {
+                    frames += adv.frames_decoded;
+                    let frame = Arc::new(state.rgba().to_vec());
+                    shared
+                        .seq
+                        .fetch_add(adv.frames_decoded as u64, Ordering::Relaxed);
+                    *shared
+                        .latest
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()) = Some(frame);
+                    *shared
+                        .last_frame
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()) = Instant::now();
+                    if !first.swap(true, Ordering::Relaxed) {
+                        crate::boot_log::bootlog("movie: first frame decoded");
+                    }
+                }
+                if adv.ended {
+                    crate::boot_log::bootlog(&format!(
+                        "movie: ended after {frames} frame(s), {:.1}s — frontend next",
+                        started.elapsed().as_secs_f32()
+                    ));
+                    ended.store(true, Ordering::Relaxed);
+                    return;
+                }
+            }
+            Err(e) => {
+                crate::boot_log::bootlog(&format!(
+                    "movie: decode failed after {frames} frame(s) ({e}) — frontend next"
+                ));
+                failed.store(true, Ordering::Relaxed);
+                ended.store(true, Ordering::Relaxed);
+                return;
+            }
+        }
+        // THE WATCHDOG: a wedged demux never produces a frame.  End the
+        // movie, journal the cause — the app lives on.
+        let last = *shared
+            .last_frame
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if last.elapsed() > MOVIE_WATCHDOG {
+            crate::boot_log::bootlog(&format!(
+                "movie: WATCHDOG fired — no frame for {:.1}s (decode wedged) — ending the movie so the app stays live",
+                last.elapsed().as_secs_f32()
+            ));
+            ended.store(true, Ordering::Relaxed);
+            return;
+        }
+        // advance() paces frames by PTS against the wall clock; this
+        // tick is only the poll cadence (a one-frame movie ends in one
+        // pass; the sleep keeps an idle player off the CPU).
+        std::thread::sleep(std::time::Duration::from_millis(8));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Unit tests — REAL fixtures end to end: the crafted biks are the
 // committed intro/silent frame spans (ffmpeg-verified upstream), the
 // archives are real RCF bytes written to disk, the player streams
@@ -1079,5 +1276,54 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Block 120: the decode WORKER
+    // ------------------------------------------------------------------
+
+    /// The worker decodes OFF the caller's thread, publishes frames
+    /// through `latest()`, and reports the end — the one-frame intro
+    /// fixture walks the whole path.
+    #[test]
+    fn worker_decodes_off_thread_and_reports_end() {
+        let root = temp_root("worker");
+        let bik = intro_one_frame();
+        let path = root.join("movies_worker.rcf");
+        std::fs::write(&path, craft_rcf(&[(INTRO_BIK_HASH, &bik)])).unwrap();
+        let movie = find_boot_movie(&[path]).unwrap();
+        let state = MoviePlayerState::open(&movie).unwrap();
+        let w = MovieWorker::spawn(state);
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        while !w.is_ended() && Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(w.is_ended(), "the one-frame movie ends on the worker");
+        let (seq, rgba) = w.latest().expect("a frame was published");
+        assert!(seq >= 1);
+        assert_eq!(rgba.len(), 1280 * 544 * 4);
+        // The main-thread shape: cheap and repeatable (Arc clone, no
+        // frame copy).
+        let _ = w.latest();
+    }
+
+    /// The skip flag ends playback on the worker (Drop also exercises
+    /// the same path — join without a hang).
+    #[test]
+    fn worker_skip_ends_playback() {
+        let root = temp_root("worker_skip");
+        let bik = intro_one_frame();
+        let path = root.join("movies_worker_skip.rcf");
+        std::fs::write(&path, craft_rcf(&[(INTRO_BIK_HASH, &bik)])).unwrap();
+        let movie = find_boot_movie(&[path]).unwrap();
+        let state = MoviePlayerState::open(&movie).unwrap();
+        let w = MovieWorker::spawn(state);
+        w.skip();
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        while !w.is_ended() && Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(w.is_ended());
+        drop(w); // joins the thread — must not hang
     }
 }

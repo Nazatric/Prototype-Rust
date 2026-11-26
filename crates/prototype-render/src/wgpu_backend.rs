@@ -1143,6 +1143,50 @@ impl Renderer {
         Ok(())
     }
 
+    /// Block 120: the REAL menu frame — the video quad (a `.gfx`
+    /// screen's extracted art) UNDER the UI pass (the shell's rows on
+    /// top while the real fonts are still pending).  ONE present, two
+    /// passes: the art pass clears, the UI pass rides the same target
+    /// with `load: Load` — exactly [`Renderer::render_frame_with_ui`]'s
+    /// two-pass shape with the world pass swapped for the video quad.
+    pub fn render_video_frame_with_ui(
+        &mut self,
+        quad: &VideoQuad,
+        bind_group: &wgpu::BindGroup,
+        list: &crate::ui::UiDrawList,
+    ) -> Result<(), wgpu::SurfaceError> {
+        let frame = self.surface.get_current_texture()?;
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("prototype-rs menu frame"),
+            });
+        Self::encode_video_pass(&mut encoder, &view, quad, bind_group);
+        if let Some(ui) = self.ui.as_ref() {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("prototype-rs menu ui pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            ui.draw(&mut pass, list);
+        }
+        self.queue.submit(Some(encoder.finish()));
+        frame.present();
+        Ok(())
+    }
+
     /// Build one ready-to-draw [`DebugDrawBatch`] per (pipeline, source)
     /// pair — the REAL-mesh variant of [`Renderer::create_debug_batches`].
     /// Sources are zipped with `pipelines` in order; the caller pairs a
