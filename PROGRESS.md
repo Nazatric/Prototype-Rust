@@ -30,7 +30,7 @@ is preserved verbatim at docs/PROGRESS-content-side.md.  478/0 (was
 181), aarch64 gate clean, examples compile.  NEXT: stage 2 — wire
 touch_controls + ui + the gfxtext HUD into the device app path with
 boot-log markers, and the device run's world-trace lines (block 116)
-pinpoint the remaining freeze.)
+pinpoint the remaining freeze.  CI note: the first three runs of this block died BEFORE any step (zero steps, no runner allocated, no log blob — an Actions-side allocation failure, not a build failure; the exact CI commands pass locally: cargo test --workspace --locked 41/41 target lines, the aarch64 gate clean).  A fresh run was kicked by this commit.)
 
 (Block 116 — THE FREEZE BISECTED BY INSTRUMENT, AND THE MOVIE PATH
 HARDENED.  The user's block-115 run: the boot is now FLAWLESS (the
