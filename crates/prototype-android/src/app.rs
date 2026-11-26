@@ -661,6 +661,11 @@ pub struct App {
     /// Block 107: the world is being PLAYED (menus hidden; the frame
     /// path streams + renders the world).
     in_world: bool,
+    /// Block 116: the one-shot first-frame trace — the device froze on
+    /// the first world frame with ZERO journal lines after BOOT
+    /// COMPLETE; these markers bisect the freeze to the exact step on
+    /// the next run (enter → player → audio → stream).
+    world_trace: u8,
     /// Block 107: persisted settings (streaming/audio/controls knobs
     /// wired to real engine behaviour).
     settings: crate::settings::Settings,
@@ -988,7 +993,15 @@ fn index_world_cached(
         .map(|d| d.join("world-index.cache"));
     if let (Some(cache), Some(_)) = (&cache_path, index_paths.first()) {
         let started = std::time::Instant::now();
-        if let Some(cached) = prototype_p3d::read_index_cache(cache, fp) {
+        if let Some(cached) = match prototype_p3d::read_index_cache_reasoned(cache, fp) {
+            Ok(c) => Some(c),
+            Err(reason) => {
+                let line = format!("index: cache REJECTED ({reason}) — rebuilding");
+                log::warn!("{line}");
+                crate::boot_log::bootlog(&line);
+                None
+            }
+        } {
             let mut scan = crate::meshes::WorldScanReport::default();
             scan.members_scanned = cached.member_count;
             scan.archives_opened = cached.archive_count;
@@ -1217,6 +1230,7 @@ impl App {
             menu_hits: crate::menu::HitRegions::default(),
             cursor: [0.0, 0.0],
             in_world: false,
+            world_trace: 0,
             settings,
             quit_requested: false,
             stick: VirtualStick::new(),
@@ -2530,7 +2544,11 @@ impl App {
         if matches!(self.boot_phase, BootPhase::Done) {
             self.menu.screen = crate::menu::MenuScreen::InGame;
             self.in_world = true;
+            self.world_trace = 1;
+            crate::boot_log::bootlog("world trace: enter requested");
             self.status_render = false;
+            self.world_trace = 1;
+            crate::boot_log::bootlog("world trace: enter requested");
         } else {
             self.menu.screen = crate::menu::MenuScreen::Loading;
         }
@@ -3705,6 +3723,10 @@ impl ApplicationHandler for App {
                     let cam = frame_camera(&self.follow, &self.player, self.aspect);
                     let player_pos = self.player.position();
                     let cam3 = [player_pos.x, player_pos.y, player_pos.z];
+                    if self.world_trace == 1 {
+                        self.world_trace = 2;
+                        crate::boot_log::bootlog("world trace: player + camera updated");
+                    }
 
                     // 2b. Block 38: the AUDIO OUTPUT stage ticks once
                     //     per frame (the same once-per-frame policy as
@@ -3714,6 +3736,10 @@ impl ApplicationHandler for App {
                     //     clip ↔ event mapping is documented UNKNOWN —
                     //     the stage mixes silence until then); the tick
                     //     and counters are the CI-visible proof.
+                    if self.world_trace == 2 {
+                        self.world_trace = 3;
+                        crate::boot_log::bootlog("world trace: audio tick begin");
+                    }
                     let audio_stats = self.audio.tick(audio_frame_count(dt));
                     if !self.audio_logged {
                         log::info!(
@@ -3830,10 +3856,28 @@ impl ApplicationHandler for App {
                             // frame, the settings cap as the member limit;
                             // the rest streams over the following frames
                             // (the near-set re-plans every frame).
+                            // Block 116: HARD cap 2 — the budget checks run
+                            // BETWEEN members, so a single member's
+                            // read+decode runs to completion; N members can
+                            // therefore block N × per-member-cost no matter
+                            // the deadline.  2 × worst-member ≈ 2-4 s, under
+                            // the ANR threshold; 6 was not.
                             let deadline =
                                 std::time::Instant::now() + std::time::Duration::from_millis(250);
                             let cap = self.settings.mesh_cap_per_frame.max(1) as usize;
+                            let cap = cap.min(2);
                             let loads = stream.load_meshes(&set.load, room, Some(deadline), cap);
+                            if self.world_trace == 3 {
+                                self.world_trace = 4;
+                                crate::boot_log::bootlog(&format!(
+                                    "world trace: stream planned {} loaded {} (pool {} B, capped t={} m={})",
+                                    set.load.len(),
+                                    loads.attempted.len(),
+                                    room,
+                                    loads.time_capped,
+                                    loads.member_capped
+                                ));
+                            }
                             if loads.errors > 0 {
                                 for e in &loads.first_errors {
                                     log::warn!("member stream: {e}");

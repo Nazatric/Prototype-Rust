@@ -114,6 +114,44 @@ pub fn write_index_cache(
 /// Read the cache; `None` on ANY problem (missing, wrong magic,
 /// version/fingerprint mismatch, corrupt payload).  Fail-open by
 /// contract — the caller rebuilds the index honestly.
+/// Block 116: WHY a cache was rejected — the boot journal needs the
+/// reason (the user's device silently rebuilt a 215 s index on every
+/// APK update with no line saying why).
+pub fn read_index_cache_reasoned(path: &Path, fingerprint: u64) -> Result<CachedIndex, String> {
+    let data = std::fs::read(path).map_err(|e| format!("unreadable: {e}"))?;
+    // Header: 4 magic + 4 version + 8 fp + 4 members + 4 archives + 8 len.
+    if data.len() < 32 || &data[0..4] != CACHE_MAGIC {
+        return Err("not a world-index cache".into());
+    }
+    let version = u32::from_le_bytes(data[4..8].try_into().map_err(|_| "truncated".to_string())?);
+    if version != CACHE_VERSION {
+        return Err(format!("format version {version} != {CACHE_VERSION} (written by an older build)"));
+    }
+    let fp = u64::from_le_bytes(data[8..16].try_into().map_err(|_| "truncated".to_string())?);
+    if fp != fingerprint {
+        return Err(format!("fingerprint {fp:#x} != {fingerprint:#x} (the corpus changed)"));
+    }
+    read_rest(path, &data, fingerprint)
+}
+
+/// The shared tail of the reasoned reader (counts + deserialize).
+fn read_rest(path: &Path, data: &[u8], fingerprint: u64) -> Result<CachedIndex, String> {
+    let _ = path;
+    let _ = fingerprint;
+    let member_count = u32::from_le_bytes(data[16..20].try_into().map_err(|_| "truncated".to_string())?);
+    let archive_count = u32::from_le_bytes(data[20..24].try_into().map_err(|_| "truncated".to_string())?);
+    let payload_len = u64::from_le_bytes(data[24..32].try_into().map_err(|_| "truncated".to_string())?) as usize;
+    if data.len() != 32 + payload_len {
+        return Err(format!("payload length mismatch ({} != {})", data.len() - 32, payload_len));
+    }
+    let index: WorldIndex = bincode::deserialize(&data[32..])
+        .map_err(|e| format!("deserialization failed ({e}) — the index struct changed"))?;
+    if index.entries.len() != member_count as usize {
+        return Err("member count mismatch".into());
+    }
+    Ok(CachedIndex { index, member_count, archive_count })
+}
+
 pub fn read_index_cache(path: &Path, fingerprint: u64) -> Option<CachedIndex> {
     let data = std::fs::read(path).ok()?;
     // Header: 4 magic + 4 version + 8 fp + 4 members + 4 archives + 8 len.

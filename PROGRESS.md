@@ -4,6 +4,34 @@ ANR fix HELD — no more 10 s death — but the boot's full index+mesh
 pass never returned on the phone, and the storage grant flow never
 fired because of a hardcoded literal.  Both fixed here).
 
+(Block 116 — THE FREEZE BISECTED BY INSTRUMENT, AND THE MOVIE PATH
+HARDENED.  The user's block-115 run: the boot is now FLAWLESS (the
+journal shows archives opened from second one, the pread index 215.6 s
+vs 262.8 s, the census 25/25, pairs, BOOT COMPLETE) — and then ZERO
+journal lines: the app froze AFTER boot, before the first world
+frame's audio-tick marker.  The candidates were the boot-movie
+advance, the NIS leg, and the member stream.  SHIPPED: (a) HARD
+GUARDS in MoviePlayerState::advance — a 40 ms REAL-wall-clock decode
+budget per redraw (over budget = slow motion, never a frozen main
+thread) and a no-progress guard (the demux position stuck across 4
+decoded frames ends the movie gracefully — the synthetic fixtures
+cannot reproduce real-BIK demux quirks, and the pacing break can
+NEVER fire when the position counter reads 0 forever); (b) the member
+stream's per-frame cap is HARD-clamped to 2 (the block-115 deadline
+only checks BETWEEN members — a single member's read+decode runs to
+completion, so N members could block N × per-member-cost; 2 ×
+worst-member stays under the ANR threshold); (c) the FIRST-FRAME
+WORLD TRACE — one-shot journal markers (enter requested → player +
+camera → audio tick begin → stream planned/loaded) that turn the next
+device run into a precise bisect of whatever still blocks; (d) the
+cache-rejection REASON is journaled (read_index_cache_reasoned — the
+device silently rebuilt the index on every APK update because the
+schema changed; now the log says so).  181/0; aarch64 gate clean.
+NEXT: the device run's trace lines pinpoint the freeze; the real .gfx
+art extraction (block 117) proceeds in parallel; the other AI's
+tarball (Lua VM, shader translation, RADP codec — the CONTENT side)
+is inventoried and reconciled against this app-side tree.)
+
 (Block 115 — THE ANR KILLED AND THE ANDROID GAPS CLOSED.  The user's
 device run: the index COMPLETED (262.8 s, cache written — boot 2+ is
 a cache hit), the census found 25/25 REAL .gfx SCREENS in their

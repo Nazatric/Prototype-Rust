@@ -392,7 +392,30 @@ impl MoviePlayerState {
         let started = *self.started.get_or_insert(now);
         let elapsed = now.duration_since(started).as_secs_f64();
         let (num, den) = self.fps();
+        // Block 116: TWO hard guards the user's phone demanded — the
+        // device froze right after BOOT COMPLETE (the journal ends
+        // there; the first advance never logged) and the only
+        // unbounded work before the first menu frame is THIS advance.
+        // 1) A wall-clock decode budget: real-movie decode cost per
+        //    frame is unknown (the fixtures are synthetic) — over
+        //    budget the movie degrades to slow motion, never to a
+        //    frozen main thread.
+        // 2) A no-progress guard: if the demux position stops moving
+        //    while frames keep decoding (a real-BIK quirk the synthetic
+        //    fixtures cannot reproduce — e.g. the position counter
+        //    reading 0 forever), the pacing break above can NEVER fire
+        //    and `frames_decoded` only bounds the loop when position
+        //    advances.  Stuck = end the movie gracefully; the world
+        //    takes over.  A degraded attract screen beats a dead app.
+        // REAL wall-clock (not the passed movie clock — tests feed a
+        // synthetic base instant; the decode budget is about CPU time).
+        let decode_deadline = Instant::now() + std::time::Duration::from_millis(40);
+        let mut last_pos = self.player.position();
+        let mut stuck = 0u32;
         while adv.frames_decoded < MAX_FRAMES_PER_REDRAW {
+            if Instant::now() >= decode_deadline {
+                break;
+            }
             // Wall-clock pacing: the next frame is due when its PTS is
             // behind the movie clock (PTS = index · den/num — the
             // container has no per-frame timestamps).
@@ -424,6 +447,25 @@ impl MoviePlayerState {
                     self.ended = true;
                     break;
                 }
+            }
+            // The no-progress guard: position stuck across several
+            // decoded frames means the demux counter is broken on THIS
+            // file — end the movie (log once), the world takes over.
+            let pos = self.player.position();
+            if pos == last_pos {
+                stuck += 1;
+                if stuck >= 4 {
+                    log::warn!(
+                        "movie: demux position stuck at {} after {} decoded frame(s) — ending the movie so the app stays live",
+                        pos,
+                        adv.frames_decoded
+                    );
+                    self.ended = true;
+                    break;
+                }
+            } else {
+                stuck = 0;
+                last_pos = pos;
             }
         }
         adv.ended = self.ended;

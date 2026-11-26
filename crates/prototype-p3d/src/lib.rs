@@ -829,7 +829,7 @@ pub mod world;
 /// every later boot; the fingerprint binds it to the exact corpus.
 pub mod index_cache;
 
-pub use index_cache::{index_fingerprint, read_index_cache, write_index_cache};
+pub use index_cache::{index_fingerprint, read_index_cache, read_index_cache_reasoned, write_index_cache};
 
 /// Block 87 — REAL `0x0012_1000` animation-track decoder (rebuild of
 /// the recycle-lost blocks 83/85, re-derived and validated live:
