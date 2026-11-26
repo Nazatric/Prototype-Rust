@@ -76,6 +76,15 @@ jobs:
     name: APK (${{ matrix.target }})
     runs-on: ubuntu-latest
     needs: test-linux
+    # Block 119: sign with the COMMITTED debug keystore instead of one
+    # cargo-apk generates fresh on every ephemeral runner.  Per-runner
+    # keys meant every build had a different signature — "install over
+    # the old app" could never succeed (signature mismatch).  From this
+    # block on, every CI APK carries the same key: uninstall the old
+    # build ONCE, and every later build updates in place.
+    env:
+      CARGO_APK_DEV_KEYSTORE: ${{ github.workspace }}/.github/keystore/debug.keystore
+      CARGO_APK_DEV_KEYSTORE_PASSWORD: android
     strategy:
       fail-fast: false
       matrix:
@@ -131,10 +140,40 @@ jobs:
         run: |
           # cargo-apk's output layout changed across versions (…/android/
           # app/, …/apk/) — search instead of hardcoding one.
-          APK=$(find target -type f -name '*.apk' | head -n1)
+          #
+          # BLOCK 119 FIX: cargo-apk leaves TWO .apk files in the build
+          # dir — `<name>-unaligned.apk` (the UNSIGNED intermediate that
+          # aapt + zipalign work from) and `<name>.apk` (the SIGNED
+          # final).  Run 41 (2026-11-26) uploaded the unsigned
+          # intermediate: `find | head -n1` picks whichever the
+          # filesystem lists first (the rust-cache restore reorders
+          # directory entries), and the release carried an APK with NO
+          # signature — Android rejects it with "package appears to be
+          # invalid".  Exclude the intermediate explicitly.
+          APK=$(find target -type f -name '*.apk' ! -name '*-unaligned.apk' | head -n1)
           if [ -z "$APK" ]; then echo "no APK produced" >&2; exit 1; fi
           NAMED="prototype-rs-debug-${{ matrix.target }}.apk"
           cp "$APK" "$NAMED"
+          # Signature gate (block 119): an installable debug APK must
+          # carry a v2 signing block (minSdk 26) and/or v1 META-INF
+          # signature files.  The broken run-41 asset had NEITHER —
+          # this check now fails the job instead of publishing an
+          # uninstallable file.
+          python3 - "$NAMED" <<'PY'
+          import os, sys, zipfile
+          p = sys.argv[1]
+          z = zipfile.ZipFile(p)
+          names = z.namelist()
+          assert "AndroidManifest.xml" in names, f"manifest missing ({len(names)} entries)"
+          has_v1 = any(n.startswith("META-INF/") and n.upper().endswith((".SF", ".RSA", ".DSA", ".EC")) for n in names)
+          size = os.path.getsize(p)
+          with open(p, "rb") as f:
+              f.seek(max(0, size - 32 * 1024 * 1024))
+              tail = f.read()
+          has_v2 = b"APK Sig Block 42" in tail
+          assert has_v1 or has_v2, "UNSIGNED APK (no v1 META-INF signature, no v2 block) — refusing to publish"
+          print(f"signed APK OK: {len(names)} entries, v1={has_v1}, v2={has_v2}")
+          PY
           echo "path=$NAMED" >> "$GITHUB_OUTPUT"
 
       # Direct-to-release upload: bypasses the account-wide Actions
