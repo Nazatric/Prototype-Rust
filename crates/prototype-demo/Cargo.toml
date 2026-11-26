@@ -23,6 +23,11 @@ required-features = ["render-wgpu"]
 
 [dependencies]
 prototype-android = { workspace = true }
+# Block 117: the evidence bins need the render/p3d/video/math crates.
+prototype-video   = { workspace = true }
+prototype-render  = { workspace = true }
+prototype-p3d     = { workspace = true }
+prototype-math    = { workspace = true }
 log               = "0.4"
 
 # Feature-gated: default builds of the workspace (and every cross-compile
@@ -41,3 +46,35 @@ render-wgpu = [
     "dep:env_logger",
     "prototype-android/winit-app",
 ]
+
+[[bin]]
+name = "block105_evidence"
+path = "src/bin/block105_evidence.rs"
+# Block 105: evidence renderer for the Android app flow + Settings
+# overlay.  Uses prototype-android's UI + touch-controls modules +
+# prototype-video's PNG encoder.  No winit/wgpu needed (CPU-only).
+required-features = []
+
+[[bin]]
+name = "block106_real_text_evidence"
+path = "src/bin/block106_real_text_evidence.rs"
+# Block 106: REAL game text from the REAL text bible through the
+# REAL gfxtextshader CPU port.  Uses prototype-render's gfxtext +
+# prototype-video's PNG encoder.  No winit/wgpu needed.
+required-features = []
+
+[[bin]]
+name = "block110_world_map_evidence"
+path = "src/bin/block110_world_map_evidence.rs"
+# Block 110: the REAL streamed world rendered - real cells.rcf
+# GameObject placements through the REAL world.rs decoders, mapped
+# top-down + flown through in 3D.  CPU-only.
+required-features = []
+
+[[bin]]
+name = "block111_world_geometry_evidence"
+path = "src/bin/block111_world_geometry_evidence.rs"
+# Block 111: the REAL static world geometry - classic Shapes decoded
+# from a real cells.rcf geometry member, rasterized through the
+# translated-DLL daylight CPU mirror + placement dot composite.
+required-features = []

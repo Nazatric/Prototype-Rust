@@ -60,7 +60,28 @@ pub mod video_quad;
 /// pairs from `frontendshaders.p3d`).
 pub mod ui;
 
-/// Root re-exports: the menu layer's CPU types (every caller wants
+//// Block 102 — the BINK movie shader pair's CPU port: consumes the
+/// REAL shipped `dll_bink_fp_e3adf8.sm30` register contract
+/// (y_tex@s0, cr_tex@s1, cb_tex@s2, a_tex@s3) and produces RGBA8 via
+/// the BT.601 limited-range matrix the FP prescribes (block 117: the
+/// content-side line's renderer, ported).
+pub mod render_bink_shader;
+/// Block 103 — the LEGACY world shader pair's CPU port: the REAL
+/// shipped VS/PS register contracts and the FULL Blinn-Phong chain
+/// (block 117: ported).
+pub mod render_legacy_shader;
+/// Block 104 — the FRONTEND TEXT shader pair's CPU port: the REAL
+/// `gfxtextshader` register contract, rasterized on the CPU with alpha
+/// blending — the first real text/HUD glyph rendering (block 117:
+/// ported).
+pub mod render_gfxtext_cpu;
+
+/// world_map — CPU rendering of the REAL streamed-world placement
+/// database (blocks 18/41 proven decoders): the real map top-down +
+/// 3D flythrough (block 117: ported).
+pub mod world_map;
+
+// Root re-exports: the menu layer's CPU types (every caller wants
 /// them without the `ui::` hop).
 pub use ui::{FontAtlas, UiDrawList, UiVertex};
 /// Block 76 — the RENDER_ART_WORLD_PATCH harness's device-free CPU

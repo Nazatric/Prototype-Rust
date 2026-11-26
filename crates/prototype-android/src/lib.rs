@@ -40,6 +40,17 @@ pub mod archive_mmap;
 pub mod asset_folder;
 pub mod audio_registry;
 pub mod boot;
+// Block 117: the content-side line's android modules, ported as
+// available building blocks (the app wiring is the next pass):
+// the storage-permission flow, the touch-control plumbing and the
+// in-game UI draw-list builders.  Their richer platform-default
+// settings live in `display_settings` (main's persisted
+// game-settings.json stays in `settings`).
+pub mod display_settings;
+pub mod permission;
+pub mod touch_controls;
+pub mod ui;
+
 // Block 103: the boot journal + panic crash-reporter (host-portable).
 pub mod boot_log;
 pub mod game_files;

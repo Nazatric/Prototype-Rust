@@ -32,6 +32,10 @@ use std::path::PathBuf;
 
 mod skinned_run;
 mod frontend_cxform;
+// Block 117: the content-side line's renderer CLIs.
+mod bink_shader_cli;
+mod gfxtext_cli;
+mod legacy_shader_cli;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -63,6 +67,21 @@ fn main() {
     }
     if args.iter().any(|a| a == "boot-status") {
         print_boot_status();
+        return;
+    }
+    if let Some(pos) = args.iter().position(|a| a == "render-bink-shader") {
+        let rest: Vec<String> = args[pos + 1..].iter().map(|s| s.to_string()).collect();
+        bink_shader_cli::run(&rest);
+        return;
+    }
+    if let Some(pos) = args.iter().position(|a| a == "render-legacy-shader") {
+        let rest: Vec<String> = args[pos + 1..].iter().map(|s| s.to_string()).collect();
+        legacy_shader_cli::run(&rest);
+        return;
+    }
+    if let Some(pos) = args.iter().position(|a| a == "render-gfxtext-hud") {
+        let rest: Vec<String> = args[pos + 1..].iter().map(|s| s.to_string()).collect();
+        gfxtext_cli::run(&rest);
         return;
     }
     if let Some(pos) = args.iter().position(|a| a == "run-lua") {

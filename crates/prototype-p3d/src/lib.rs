@@ -844,6 +844,7 @@ pub mod anim;
 /// `0xB1B1`, bone palettes `0x0001_000D`) and the `0x0002_3000`
 /// Skeleton with its 94 `0x0002_3001` joints, plus row-vector
 /// linear-blend skinning helpers.
+pub mod modern;
 pub mod skin;
 
 /// Typed mesh-related constants from the public Pure3D format family.

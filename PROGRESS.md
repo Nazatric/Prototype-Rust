@@ -1,8 +1,36 @@
+> Block 117: the parallel content-side line (the user's other AI) kept its own milestone history — the real-text gfxtext renderer, the legacy/bink/gfxtext shader CPU ports, the world map, the touch/permission android modules.  Its full journal is preserved verbatim in [docs/PROGRESS-content-side.md](docs/PROGRESS-content-side.md); the app-side line (this file) remains the device truth.
+
 Last updated: 2026-11-24 late (user session, no cron);
 block 104 complete (the user's second on-device run: the block-103
 ANR fix HELD — no more 10 s death — but the boot's full index+mesh
 pass never returned on the phone, and the storage grant flow never
 fired because of a hardcoded literal.  Both fixed here).
+
+(Block 117 — THE TWO LINES UNITED.  The user's other-AI tarball
+(`prototype-rs.tar(newest).gz`) and origin/main DIVERGED: the tarball
+carried 24 files main lacks (the REAL-text gfxtext CPU renderer, the
+legacy/bink/gfxtext shader CPU ports, the world-map renderer, three
+render CLIs, four evidence bins, nine p3d probe examples, a richer
+skinned_run, and the android permission/touch/ui modules with a
+15.6 KB platform-default settings system), while main carried 8 the
+tarball lacked (boot_log, the mmap index, index_cache, the menu,
+jni_ui/platform_ui, render/ui).  UNITED: main stays the app-side
+baseline (device-proven, blocks 113-116); the tarball's content-side
+work is ported IN — 23 files copied, render/lib.rs + android/lib.rs
+register the new modules (their settings renamed `display_settings`
+so both settings systems coexist), bin/main.rs gains the three
+renderer CLIs (render-bink-shader / render-legacy-shader /
+render-gfxtext-hud), demo gains the four evidence bins + world_data,
+p3d's `modern` module is DECLARED (the file existed in main but was
+never registered — their snapshot's inconsistency, and their
+permission.rs forwarded to an activity helper that exists in NEITHER
+tree: rerouted through a registered intent-sender hook so all JNI
+stays in jni_ui per main's architecture).  Their full 534 KB journal
+is preserved verbatim at docs/PROGRESS-content-side.md.  478/0 (was
+181), aarch64 gate clean, examples compile.  NEXT: stage 2 — wire
+touch_controls + ui + the gfxtext HUD into the device app path with
+boot-log markers, and the device run's world-trace lines (block 116)
+pinpoint the remaining freeze.)
 
 (Block 116 — THE FREEZE BISECTED BY INSTRUMENT, AND THE MOVIE PATH
 HARDENED.  The user's block-115 run: the boot is now FLAWLESS (the

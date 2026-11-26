@@ -68,6 +68,10 @@ pub fn default_config() -> DemoConfig {
     }
 }
 
+/// Block 110/111 (ported block 117): the evidence bins' shared
+/// world-data loaders (placement dots, mesh diffuse resolution).
+pub mod world_data;
+
 #[cfg(test)]
 mod tests {
     use super::*;

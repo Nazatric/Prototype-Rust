@@ -65,6 +65,12 @@ struct Args {
     /// chase cam, 0.0 = static frame, 0.15 = slow pan showing the
     /// travel while keeping the character framed).
     follow_lag: f32,
+    /// Block 108: MP4 playback rate for the encoded evidence.  `None`
+    /// (default) = the ANIMATION PRELUDE's real fps (the
+    /// 0x121000 header's f32 field — alex_loco_run_n = 30.0 fps),
+    /// pinned from the actual byte stream.  `--encode-fps N`
+    /// overrides (e.g. 10 for a slow-motion inspection take).
+    encode_fps: Option<f32>,
 }
 
 fn parse_args(args: &[&String]) -> Args {
@@ -74,7 +80,7 @@ fn parse_args(args: &[&String]) -> Args {
              [--only NAME] [--skel-substr X] [--shape-substr X] [--frames N] [--cycle-frames N] \
              [--width W] [--height H] [--orbit-start-deg D] [--orbit-end-deg D] \
              [--cam-dist D] [--cam-height D] [--rest-pose] [--root-motion] [--no-tex] \
-             [--uv-stream b|a] [--up-axis x|y|z] [--list]"
+             [--uv-stream b|a] [--up-axis x|y|z] [--encode-fps N] [--list]"
         );
         std::process::exit(2);
     }
@@ -99,6 +105,7 @@ fn parse_args(args: &[&String]) -> Args {
         root_motion: false,
         camera_static: false,
         follow_lag: 1.0,
+        encode_fps: None,
     };
     let mut i = 1usize; // args[0] = the p3d path
     while i < args.len() {
@@ -135,6 +142,9 @@ fn parse_args(args: &[&String]) -> Args {
             "--camera-static" => a.camera_static = true,
             "--follow-lag" => {
                 a.follow_lag = val(&mut i).parse().unwrap_or_else(|e| die("--follow-lag", e))
+            }
+            "--encode-fps" => {
+                a.encode_fps = Some(val(&mut i).parse().unwrap_or_else(|e| die("--encode-fps", e)))
             }
             "--no-tex" => a.no_tex = true,
             "--uv-stream" => {
@@ -405,7 +415,7 @@ pub fn run(args: &[&String]) {
                 texs.push(p.tex.clone());
             }
         }
-        let cam = orbit_camera(
+        let mut cam = orbit_camera(
             &follow_center,
             dist,
             radius,
@@ -416,6 +426,29 @@ pub fn run(args: &[&String]) {
             frames,
             up_axis,
         );
+        // Block 109 (the block-108 deferral fix): with --root-motion
+        // and a lagged camera the orbit LOOKS AT the lagged center,
+        // but the subject runs past it — after ~1 cycle the runner is
+        // (1 - follow_lag) x travel behind the look point and leaves
+        // the view cone (every post-cycle-1 frame rendered blank in
+        // the block-108 root-motion attempt).  Fix: keep the LAGGED
+        // orbit EYE (smooth dolly) but always AIM at the subject's
+        // actual root position, and stretch the far plane to cover
+        // the eye→subject distance (the block-90 far = dist + 30
+        // assumed the subject stayed near the orbit center).
+        if a.root_motion && !a.camera_static {
+            let subject = pose[0][3];
+            cam.target = Vec3::new(subject[0], subject[1], subject[2]);
+            let eye = [cam.eye.x, cam.eye.y, cam.eye.z];
+            let dx = subject[0] - eye[0];
+            let dy = subject[1] - eye[1];
+            let dz = subject[2] - eye[2];
+            let eye_to_subject = (dx * dx + dy * dy + dz * dz).sqrt();
+            cam.far = cam.far.max(eye_to_subject + radius * 2.0);
+            // Frame-width guard: at long eye→subject distances the
+            // 45° FOV can still leave the subject small but VISIBLE —
+            // acceptable (a running-away shot), never blank.
+        }
         let refs: Vec<&SceneMesh> = meshes.iter().collect();
         let tex_refs: Vec<Option<(&[u8], u32, u32)>> = texs
             .iter()
@@ -455,6 +488,66 @@ pub fn run(args: &[&String]) {
         a.height,
         total_drawn / frames.max(1)
     );
+
+    // Block 108: the MP4 playback rate is the ANIMATION PRELUDE's real
+    // fps (the 0x121000 header's f32 field) unless --encode-fps
+    // overrides.  alex_loco_run_n carries 30.0 fps in the file; the
+    // pre-108 evidence encodes played back at a hardcoded 10 fps
+    // (3x slow motion) because the rate never reached the encode step.
+    let encode_fps = a.encode_fps.unwrap_or(track.fps);
+    let (ffmpeg_cmd, script) = encode_script_text(&a.out_prefix, track.fps, a.encode_fps);
+    let script_path = encode_script_path(&a.out_prefix);
+    let script_ok = std::fs::write(&script_path, &script).is_ok();
+    eprintln!(
+        "render-skinned-run: playback rate = {encode_fps} fps ({}); encode:\n  {ffmpeg_cmd}{}",
+        if a.encode_fps.is_some() {
+            "--encode-fps override"
+        } else {
+            "animation prelude (REAL)"
+        },
+        if script_ok {
+            format!("\n  script written: {script_path}")
+        } else {
+            String::new()
+        }
+    );
+}
+
+/// Block 108: the ffmpeg encode command + its companion script text.
+///
+/// The playback rate is `override_fps.unwrap_or(track_fps)` — i.e. the
+/// animation prelude's real fps by default (alex_loco_run_n = 30.0),
+/// with `--encode-fps` as an explicit override (e.g. 10 for a slow-
+/// motion inspection take).  Pure (no filesystem): unit-tested.
+fn encode_script_text(
+    out_prefix: &str,
+    track_fps: f32,
+    override_fps: Option<f32>,
+) -> (String, String) {
+    let encode_fps = override_fps.unwrap_or(track_fps);
+    let mp4 = format!("{out_prefix}.mp4");
+    let ffmpeg_cmd = format!(
+        "ffmpeg -y -framerate {encode_fps} -i {out_prefix}_%04d.png -c:v libx264 -pix_fmt yuv420p \
+         -crf 28 -preset veryfast -movflags +faststart {mp4}"
+    );
+    let script = format!(
+        "#!/bin/sh\n# Block 108: auto-written by render-skinned-run.\n\
+         # Playback rate: {} fps{}.\n{}\n",
+        encode_fps,
+        if override_fps.is_some() {
+            format!(" (overridden by --encode-fps; prelude carried {track_fps} fps)")
+        } else {
+            " (the animation prelude's REAL rate)".to_string()
+        },
+        ffmpeg_cmd
+    );
+    (ffmpeg_cmd, script)
+}
+
+/// Where the encode script lands: next to the PNG prefix (the prefix's
+/// directory + `encode.sh`).
+fn encode_script_path(out_prefix: &str) -> String {
+    format!("{}encode.sh", out_prefix.trim_end_matches(|c| c != '/'))
 }
 
 /// Skinned SceneMesh for one draw part: positions/normals from the
@@ -554,4 +647,122 @@ fn orbit_camera(
     cam.near = (radius * 0.05).max(0.01);
     cam.far = dist + 30.0;
     cam
+}
+
+// ---------------------------------------------------------------------------
+// Block 108 tests — the encode pacing is the ANIMATION PRELUDE's real
+// fps, not a hardcoded rate.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The committed alex_loco_run_n fixture pins the PRELUDE's real
+    /// frame_count + fps — the values the CLI's encode step consumes
+    /// (block 108: the MP4 playback rate defaults to these, replacing
+    /// the pre-108 hardcoded 10 fps which played every take 3x slow).
+    #[test]
+    fn fixture_prelude_paces_the_encode() {
+        let path = env!("CARGO_MANIFEST_DIR").to_string()
+            + "/../prototype-p3d/tests/fixtures/anim_alex_loco_run_n.p3d";
+        let buf = std::fs::read(&path).expect("fixture present");
+        let (off, span, name) = &prototype_p3d::anim::find_anim_tracks(&buf)[0];
+        assert_eq!(name, "alex_loco_run_n");
+        let t = prototype_p3d::anim::decode_anim_track(&buf, *off, *span).unwrap();
+        // The prelude values (PROVEN block 85, re-pinned block 107 from
+        // the raw alex.p3d byte stream @ 0x72c182).
+        assert_eq!(t.frame_count, 19.0);
+        assert_eq!(t.fps, 30.0);
+        // The CLI's pacing contract: cycle = frame_count (rounded up,
+        // min 1); encode fps = the prelude fps unless overridden.
+        let cycle = t.frame_count.max(1.0) as usize;
+        assert_eq!(cycle, 19);
+        let encode_fps = t.fps; // the None-override path
+        assert!((encode_fps - 30.0).abs() < 1e-6);
+        // The override path returns exactly what the user passed.
+        let overridden: Option<f32> = Some(10.0);
+        assert_eq!(overridden.unwrap_or(t.fps), 10.0);
+    }
+
+    /// The CLI's encode-script generator: by default the playback rate
+    /// is the ANIMATION PRELUDE's real fps; --encode-fps overrides.
+    /// (The prelude values themselves are pinned in
+    /// prototype-p3d's `fixture_header_decodes` — 19.0 frames / 30.0
+    /// fps for alex_loco_run_n.)
+    #[test]
+    fn encode_script_defaults_to_prelude_fps() {
+        // No override → the prelude fps (30.0 for the run track).
+        let (cmd, script) = encode_script_text("media/run/frame", 30.0, None);
+        assert!(
+            cmd.contains("-framerate 30 "),
+            "default = prelude fps, got: {cmd}"
+        );
+        assert!(cmd.contains("libx264"), "cmd is an ffmpeg encode: {cmd}");
+        assert!(cmd.contains("media/run/frame_%04d.png"));
+        assert!(cmd.contains("media/run/frame.mp4"));
+        assert!(script.contains("#!/bin/sh"));
+        assert!(script.contains("REAL rate"), "script documents the source: {script}");
+        // The script path lands next to the PNGs.
+        assert_eq!(encode_script_path("media/run/frame"), "media/run/encode.sh");
+        // Override → the user's rate, with the prelude documented.
+        let (cmd2, script2) = encode_script_text("media/run/frame", 30.0, Some(10.0));
+        assert!(cmd2.contains("-framerate 10 "), "override respected: {cmd2}");
+        assert!(
+            script2.contains("overridden by --encode-fps"),
+            "script documents the override: {script2}"
+        );
+        assert!(script2.contains("30 fps"), "prelude value still documented");
+    }
+
+    /// Block 109: the chase-cam aiming contract — with --root-motion
+    /// and a lagged orbit the camera EYE stays on the smooth lag
+    /// dolly but the TARGET tracks the subject root, so the runner
+    /// stays framed over arbitrarily long takes (the block-108
+    /// root-motion attempt went blank after cycle 1 because the look
+    /// point stayed on the lagged center while the subject ran away).
+    /// The aiming lives in the frame loop (cam.target = pose root);
+    /// this test pins the MATH it relies on: the far-plane stretch
+    /// must cover the eye-to-subject distance for the documented
+    /// block-90 take (8 cycles x 3.59 m/cycle travel at follow-lag
+    /// 1.0 keeps eye-to-subject at the orbit dist).
+    #[test]
+    fn root_motion_far_plane_covers_chase_distance() {
+        // Block-90 proven take geometry: radius ~0.99, dist = 2.4 x
+        // radius, 8 cycles x 3.59 m/cycle of root travel.
+        let radius = 0.99f32;
+        let dist = 2.4 * radius;
+        let far_block90 = dist + 30.0; // the block-90 far plane
+        // 8 cycles of travel at the REAL cycle travel (block 90:
+        // z -0.275 to -3.870 per cycle = 3.595 m).
+        let travel_per_cycle = 3.870f32 - 0.275;
+        let total_travel = 8.0 * travel_per_cycle;
+        // Chase cam (lag 1.0): the eye follows the root, so the
+        // eye-to-subject distance stays at the orbit dist.
+        let eye_to_subject_lag1 = dist;
+        let far_needed = eye_to_subject_lag1 + radius * 2.0;
+        assert!(
+            far_block90 >= far_needed,
+            "block-90 far plane covers the chase take: {far_block90} >= {far_needed}"
+        );
+        // Lagged cam (lag 0.15): the subject runs (1-lag) x travel
+        // past the look point — the block-108 blank-frame geometry.
+        let lag = 0.15f32;
+        let subject_offset = (1.0 - lag) * total_travel;
+        let eye_to_subject_lagged = dist + subject_offset; // worst case
+        let _ = eye_to_subject_lagged; // documented: needs the block-109 stretch
+        // The block-109 contract: far >= eye_to_subject + 2 x radius
+        // — asserted via the formula the frame loop applies.
+        let far_stretched = far_block90.max(eye_to_subject_lagged + radius * 2.0);
+        assert!(
+            far_stretched >= eye_to_subject_lagged,
+            "stretched far covers the lagged take"
+        );
+        // And the stretch formula never SHRINKS the plane.
+        let tiny_subject = 0.5f32;
+        assert_eq!(
+            far_block90.max(tiny_subject + radius * 2.0),
+            far_block90,
+            "stretch is a max(), never a shrink"
+        );
+    }
 }
