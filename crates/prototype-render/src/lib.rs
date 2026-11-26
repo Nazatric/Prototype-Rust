@@ -109,6 +109,12 @@ pub mod render_frontend_cpu;
 /// and placements render; shapes/fonts/ActionScript are recorded and
 /// skipped — honest scopes, never guesses.
 pub mod frontend_gfx;
+/// Block 121 — the VECTOR half of the real screens: DefineShape
+/// 1/2/3 + DefineEditText + DefineSprite parsing, the fill-side edge
+/// chaining, the even-odd scanline filler and the real-text
+/// rasterizer.  The block-120 journal proved the real screens carry
+/// ZERO bitmaps — this is what actually draws them.
+pub mod frontend_gfx_shapes;
 #[cfg(feature = "render-wgpu")]
 pub mod wgpu_backend;
 

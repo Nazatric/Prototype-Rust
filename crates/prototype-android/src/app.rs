@@ -2747,7 +2747,18 @@ impl App {
             Some(rgba) => Some(rgba),
             None => real_name
                 .and_then(|name| self.real_screens.get(name))
-                .and_then(|s| prototype_render::frontend_gfx::render_gfx_first_frame(s, w, h).ok())
+                .and_then(|s| {
+                    // Block 121: the REAL screens are VECTOR (the
+                    // block-120 journal: 0 bitmaps, DefineShape +
+                    // sprites + real text) — the vector renderer IS
+                    // the menu path; the bitmap path stays for any
+                    // screen that carries images.
+                    if s.has_vector_content() {
+                        prototype_render::frontend_gfx_shapes::render_vector_frame(s, w, h).ok()
+                    } else {
+                        prototype_render::frontend_gfx::render_gfx_first_frame(s, w, h).ok()
+                    }
+                })
                 .map(|f| f.rgba),
         };
         if let Some(rgba) = frame {
@@ -2779,7 +2790,15 @@ impl App {
                         log::warn!("real menu: art upload failed: {e}");
                     }
                 }
-                match r.render_video_frame_with_ui(&gpu.quad, &gpu.bind_group, &list) {
+                // Block 121: THE APP UI IS GONE — the real screen
+                // renders with an EMPTY overlay list.  The shell keeps
+                // computing its hit regions (menu_draw above) so taps
+                // still navigate; nothing of it is drawn.
+                let empty = prototype_render::UiDrawList {
+                    screen: [w as f32, h as f32],
+                    ..Default::default()
+                };
+                match r.render_video_frame_with_ui(&gpu.quad, &gpu.bind_group, &empty) {
                     Ok(()) => return,
                     Err(e) => {
                         log::warn!("real menu frame failed: {e:?} — the shell takes over");
@@ -3403,10 +3422,22 @@ impl App {
                             .collect::<Vec<_>>()
                             .join(", ")
                     };
+                    let (shapes, texts, sprites) = screen.chars.values().fold(
+                        (0u32, 0u32, 0u32),
+                        |(s, t, sp), c| match c {
+                            prototype_render::frontend_gfx_shapes::GfxChar::Shape(_) => (s + 1, t, sp),
+                            prototype_render::frontend_gfx_shapes::GfxChar::Text(_) => (s, t + 1, sp),
+                            prototype_render::frontend_gfx_shapes::GfxChar::Sprite(_) => (s, t, sp + 1),
+                        },
+                    );
                     boot_log::bootlog(&format!(
-                        "menu: real screen {name} parsed — {} image(s), {} placement(s), unrendered: {unrendered}",
+                        "menu: real screen {name} parsed — {} image(s), {} shape(s), {} text(s), {} sprite(s), {} placement(s), unrendered: {unrendered}{}",
                         screen.images.len(),
+                        shapes,
+                        texts,
+                        sprites,
                         screen.placements.len(),
+                        if screen.has_vector_content() { " — VECTOR renderer active" } else { "" },
                     ));
                     self.real_screens.insert(*name, screen);
                 }
@@ -4100,8 +4131,20 @@ impl ApplicationHandler for App {
                                     // their REAL binary records.
                                     let paired_room =
                                         PAIRED_MESH_CAP.saturating_sub(self.paired.len());
-                                    let ploads =
-                                        stream.load_paired_meshes(&set.load, cam3, paired_room);
+                                    // Block 121: the paired half is BUDGETED like
+                                    // the mesh half now — the block-115 deadline
+                                    // bounded only `load_meshes`, and the paired
+                                    // half ran over the WHOLE entry set in one
+                                    // call (N members × 0.5-2 s each on the main
+                                    // thread = the "make a new game → isn't
+                                    // responding" ANR).  Same deadline, same cap.
+                                    let ploads = stream.load_paired_meshes(
+                                        &set.load,
+                                        cam3,
+                                        paired_room,
+                                        Some(deadline),
+                                        cap,
+                                    );
                                     if ploads.errors > 0 {
                                         for e in &ploads.first_errors {
                                             log::warn!("member stream paired: {e}");

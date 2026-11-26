@@ -129,7 +129,7 @@ fn dot4(a: &[f32; 4], b: &[f32; 4]) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]
 }
 
-fn f32_to_u8(v: f32) -> u8 {
+pub(crate) fn f32_to_u8(v: f32) -> u8 {
     // The real pipeline converts the f32 render target to unorm8 on
     // readback; nearest rounding, clamped to [0, 255].
     let x = (v * 255.0).round();

@@ -59,9 +59,10 @@ pub struct GfxPlacement {
 }
 
 /// A parsed screen: the stage `RECT` (twips), background colour, the
-/// extracted bitmaps, the frame-1 display list (depth order = paint
-/// order), and an honest count of every tag kind this parser does
-/// not render yet.
+/// extracted bitmaps, the character dictionary (shapes / texts /
+/// sprites — block 121), the frame-1 display list (depth order =
+/// paint order), and an honest count of every tag kind this parser
+/// does not render yet.
 #[derive(Debug, Clone, Default)]
 pub struct GfxScreen {
     /// Stage RECT `(xmin, ymin, xmax, ymax)` in twips.
@@ -69,6 +70,10 @@ pub struct GfxScreen {
     /// `SetBackgroundColor` as RGBA8 floats (alpha 1).
     pub background: [f32; 4],
     pub images: Vec<GfxImage>,
+    /// Block 121: the character dictionary — DefineShape (2/22/32),
+    /// DefineEditText (37) and DefineSprite (39, its own frame-1
+    /// display list) — keyed by character id.
+    pub chars: std::collections::BTreeMap<u16, crate::frontend_gfx_shapes::GfxChar>,
     /// Frame-1 display list in DEPTH order (ascending = painter order).
     pub placements: Vec<GfxPlacement>,
     /// `(tag code, occurrences)` for every tag kind skipped — the
@@ -77,11 +82,26 @@ pub struct GfxScreen {
     pub unrendered: Vec<(u8, u32)>,
 }
 
+impl GfxScreen {
+    /// True when the screen carries VECTOR content (shapes or texts)
+    /// — the vector renderer is the right path for it (block 121:
+    /// the real screens are 100% vector, zero bitmaps).
+    pub fn has_vector_content(&self) -> bool {
+        self.chars.values().any(|c| {
+            matches!(
+                c,
+                crate::frontend_gfx_shapes::GfxChar::Shape(_)
+                    | crate::frontend_gfx_shapes::GfxChar::Text(_)
+            )
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // byte + bit readers (SWF is little-endian bytes, MSB-first bit fields)
 // ---------------------------------------------------------------------------
 
-struct ByteReader<'a> {
+pub(crate) struct ByteReader<'a> {
     b: &'a [u8],
     p: usize,
 }
@@ -124,16 +144,16 @@ impl<'a> ByteReader<'a> {
 }
 
 /// MSB-first bit reader over a fixed span (RECT / MATRIX fields).
-struct BitReader<'a> {
+pub(crate) struct BitReader<'a> {
     b: &'a [u8],
     pos: usize,
 }
 
 impl<'a> BitReader<'a> {
-    fn new(b: &'a [u8]) -> Self {
+    pub(crate) fn new(b: &'a [u8]) -> Self {
         Self { b, pos: 0 }
     }
-    fn bits(&mut self, n: u32) -> Result<u32, String> {
+    pub(crate) fn bits(&mut self, n: u32) -> Result<u32, String> {
         let mut v = 0u32;
         for _ in 0..n {
             let byte = self.b.get(self.pos >> 3).ok_or("gfx: eof in bit field")?;
@@ -144,7 +164,7 @@ impl<'a> BitReader<'a> {
         Ok(v)
     }
     /// Sign-extend an `n`-bit two's-complement field.
-    fn sbits(&mut self, n: u32) -> Result<i32, String> {
+    pub(crate) fn sbits(&mut self, n: u32) -> Result<i32, String> {
         let v = self.bits(n)?;
         if n == 0 {
             return Ok(0);
@@ -155,18 +175,23 @@ impl<'a> BitReader<'a> {
             Ok(v as i32)
         }
     }
-    fn align_byte(&mut self) {
+    pub(crate) fn align_byte(&mut self) {
         self.pos = (self.pos + 7) & !7;
     }
     /// Byte offset the reader has consumed through (byte-aligned).
-    fn consumed_bytes(&self) -> usize {
+    pub(crate) fn consumed_bytes(&self) -> usize {
         (self.pos + 7) >> 3
     }
 }
 
 /// The SWF RECT: `UB[5] NBits` + four `SB[NBits]` (twips).  FILE
 /// order is (xmin, xmax, ymin, ymax); stored here normalized to
-/// (xmin, ymin, xmax, ymax).
+/// (xmin, ymin, xmax, ymax).  (The shapes module reuses this — see
+/// [`parse_rect_pub`].)
+pub(crate) fn parse_rect_pub(r: &mut BitReader<'_>) -> Result<[f32; 4], String> {
+    parse_rect(r)
+}
+
 fn parse_rect(r: &mut BitReader<'_>) -> Result<[f32; 4], String> {
     let n = r.bits(5)?;
     if n == 0 || n > 31 {
@@ -432,30 +457,39 @@ pub fn parse_gfx(bytes: &[u8]) -> Result<GfxScreen, String> {
                 list.remove(&depth);
             }
             39 => {
-                // DefineSprite: skip the whole nested tag stream to
-                // ITS End (code 0, zero-length) — nested sprites are
-                // character definitions, not frame-1 content.
-                let mut t = tags.take_tag_body(len)?;
-                let _id = t.u16()?;
-                let _frames = t.u16()?;
-                let mut depth_guard = 0u32;
-                loop {
-                    if depth_guard > 1_000_000 {
-                        return Err("gfx: DefineSprite sub-stream ran away".into());
-                    }
-                    depth_guard += 1;
-                    let cl = t.u16()?;
-                    let c = (cl >> 6) as u8;
-                    let mut l = (cl & 0x3f) as usize;
-                    if l == 0x3f {
-                        l = t.u32()? as usize;
-                    }
-                    if c == 0 && l == 0 {
-                        break;
-                    }
-                    let _ = t.bytes(l)?;
-                }
+                // DefineSprite (block 121): the nested tag stream IS
+                // the sprite's frame-1 display list (nested End
+                // terminates it).  Nested character definitions are
+                // legal inside sprites — they join the SAME dictionary.
+                let body = tags.bytes(len)?.to_vec();
+                let mut sr = ByteReader::new(&body);
+                let id = sr.u16()?;
+                let _frames = sr.u16()?;
+                let list = parse_sprite_stream(sr.bytes(sr.remaining())?, &mut screen.chars)?;
+                screen.chars.insert(id, crate::frontend_gfx_shapes::GfxChar::Sprite(list));
                 *skipped.entry(39).or_insert(0) += 1;
+            }
+            2 | 22 | 32 => {
+                // DefineShape / DefineShape2 / DefineShape3 (block 121):
+                // the vector art the real screens are made of.
+                let body = tags.bytes(len)?.to_vec();
+                let version = match code {
+                    2 => 1u8,
+                    22 => 2,
+                    _ => 3,
+                };
+                let shape = crate::frontend_gfx_shapes::parse_shape(&body, version)?;
+                let id = (body[0] as u16) | ((body[1] as u16) << 8);
+                screen.chars.insert(id, crate::frontend_gfx_shapes::GfxChar::Shape(shape));
+                *skipped.entry(code).or_insert(0) += 1;
+            }
+            37 => {
+                // DefineEditText (block 121): the REAL UI text.
+                let body = tags.bytes(len)?.to_vec();
+                let text = crate::frontend_gfx_shapes::parse_edit_text(&body)?;
+                let id = (body[0] as u16) | ((body[1] as u16) << 8);
+                screen.chars.insert(id, crate::frontend_gfx_shapes::GfxChar::Text(text));
+                *skipped.entry(37).or_insert(0) += 1;
             }
             other => {
                 // Everything else (shapes, fonts, text, JPEGs,
@@ -472,6 +506,117 @@ pub fn parse_gfx(bytes: &[u8]) -> Result<GfxScreen, String> {
         .collect();
     screen.unrendered = skipped.into_iter().collect();
     Ok(screen)
+}
+
+
+/// Parse a DefineSprite's nested tag stream to ITS frame-1 display
+/// list.  Nested character definitions (shapes/texts/sprites) join
+/// the shared dictionary; placements/remove-records build the list;
+/// ShowFrame or End terminates.
+fn parse_sprite_stream(
+    body: &[u8],
+    chars: &mut std::collections::BTreeMap<u16, crate::frontend_gfx_shapes::GfxChar>,
+) -> Result<Vec<GfxPlacement>, String> {
+    let mut list: std::collections::BTreeMap<u16, (u16, [f32; 6])> = Default::default();
+    let mut r = ByteReader::new(body);
+    let mut guard = 0u32;
+    loop {
+        guard += 1;
+        if guard > 1_000_000 {
+            return Err("gfx: sprite sub-stream ran away".into());
+        }
+        let code_len = r.u16()?;
+        let code = (code_len >> 6) as u8;
+        let mut len = (code_len & 0x3f) as usize;
+        if len == 0x3f {
+            len = r.u32()? as usize;
+        }
+        match code {
+            0 => break,        // End
+            1 => break,        // ShowFrame — frame 1 done
+            26 | 27 => {
+                let body = r.bytes(len)?.to_vec();
+                parse_place_record(&body, code, &mut list)?;
+            }
+            28 => {
+                let mut t = r.take_tag_body(len)?;
+                let depth = t.u16()?;
+                list.remove(&depth);
+            }
+            2 | 22 | 32 | 37 | 39 => {
+                let nested = r.bytes(len)?.to_vec();
+                match code {
+                    39 => {
+                        let mut sr = ByteReader::new(&nested);
+                        let id = sr.u16()?;
+                        let _frames = sr.u16()?;
+                        let sub = parse_sprite_stream(sr.bytes(sr.remaining())?, chars)?;
+                        chars.insert(id, crate::frontend_gfx_shapes::GfxChar::Sprite(sub));
+                    }
+                    37 => {
+                        let text = crate::frontend_gfx_shapes::parse_edit_text(&nested)?;
+                        let id = (nested[0] as u16) | ((nested[1] as u16) << 8);
+                        chars.insert(id, crate::frontend_gfx_shapes::GfxChar::Text(text));
+                    }
+                    _ => {
+                        let version = match code { 2 => 1u8, 22 => 2, _ => 3 };
+                        let shape = crate::frontend_gfx_shapes::parse_shape(&nested, version)?;
+                        let id = (nested[0] as u16) | ((nested[1] as u16) << 8);
+                        chars.insert(id, crate::frontend_gfx_shapes::GfxChar::Shape(shape));
+                    }
+                }
+            }
+            _ => {
+                let _ = r.bytes(len)?;
+            }
+        }
+    }
+    Ok(list
+        .into_iter()
+        .map(|(depth, (char_id, matrix))| GfxPlacement { depth, char_id, matrix })
+        .collect())
+}
+
+/// One PlaceObject2/3 record: (depth, char id, matrix) into the
+/// display list (the Move case re-transforms the existing depth).
+fn parse_place_record(
+    body: &[u8],
+    code: u8,
+    list: &mut std::collections::BTreeMap<u16, (u16, [f32; 6])>,
+) -> Result<(), String> {
+    let mut t = ByteReader::new(body);
+    let mut f2 = 0u8;
+    if code == 27 {
+        let _f1 = t.u8()?;
+        f2 = t.u8()?;
+    }
+    let flags = t.u8()?;
+    let depth = t.u16()?;
+    let has_char = flags & 0x02 != 0;
+    let has_matrix = flags & 0x04 != 0;
+    if code == 27 && f2 & 0x20 != 0 {
+        // ClassName (null-terminated) — skip.
+        loop {
+            if t.u8()? == 0 {
+                break;
+            }
+        }
+    }
+    let char_id = if has_char { Some(t.u16()?) } else { None };
+    let matrix = if has_matrix {
+        let mut br = BitReader::new(t.bytes(t.remaining())?);
+        parse_matrix(&mut br)?
+    } else {
+        [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+    };
+    match (char_id, list.get_mut(&depth)) {
+        (Some(id), _) => {
+            list.insert(depth, (id, matrix));
+        }
+        (None, Some(slot)) => slot.1 = matrix,
+        (None, None) => {}
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

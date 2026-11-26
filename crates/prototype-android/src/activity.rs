@@ -58,6 +58,24 @@ pub fn init_logging(app: &AndroidApp) {
 /// The NativeActivity entry point.
 #[no_mangle]
 pub fn android_main(app: AndroidApp) {
+    // Block 121: the SAME PROCESS can host a SECOND `android_main` —
+    // Android relaunches the activity into a recycled process (fast
+    // open/close, or the launcher restarting the activity).  winit
+    // forbids building a second event loop and PANICKED
+    // ("RecreationAttempt @ activity.rs:96") — the user's journal
+    // shows FIVE such panics in a row (2026-11-26), each a crash
+    // dialog, each a relaunch into the same recycled process.  The
+    // re-entry exits CLEANLY instead: this launch finishes (one dead
+    // tap), and the NEXT launch starts a fresh process that boots.
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static LOOP_RAN: AtomicBool = AtomicBool::new(false);
+    if LOOP_RAN.swap(true, Ordering::SeqCst) {
+        log::warn!("android_main re-entered in a recycled process — clean exit (a second winit event loop cannot exist; the next launch boots fresh)");
+        crate::boot_log::bootlog(
+            "activity: relaunched into a recycled process — clean exit (the next launch boots fresh)",
+        );
+        return;
+    }
     init_logging(&app);
     log::info!("prototype-rs native activity starting (loader-style, no bundled assets)");
 

@@ -447,6 +447,11 @@ pub struct MemberPairedLoad {
 /// What one physical paired load pass did (the App's per-frame delta).
 #[derive(Debug, Clone, Default)]
 pub struct MemberPairedMeshes {
+    /// Block 121: the tick stopped on the member cap (more work pending).
+    pub member_capped: bool,
+    /// Block 121: the tick stopped on the wall-clock deadline (more
+    /// work pending — the caller keeps streaming next frame).
+    pub time_capped: bool,
     /// Members whose paired content was fetched and decoded.
     pub loads: Vec<MemberPairedLoad>,
     /// Members actually marked paired-loaded this pass (in attempt
@@ -522,22 +527,48 @@ impl MemberMeshStream {
     /// (their paired content is trivially complete).  A member marked
     /// here stays paired-loaded until `unload_paired` — a fetch that
     /// yields zero meshes is a COMPLETE load, not a failure.
+    ///
+    /// Block 121: BUDGETED like the mesh half — the block-115 fix
+    /// bounded only `load_meshes`; the paired half still ran over the
+    /// WHOLE entry load set in one call, and `collect_paired_meshes`
+    /// decompresses a member's geometry per pair (0.5-2 s per member
+    /// on a phone).  Entering the world desired dozens of members →
+    /// the first in-world frame blocked the main thread for 30+ s →
+    /// the "make a new game → isn't responding" ANR (the 2026-11-26
+    /// journal's silence after the frontend hand-off).  Same policy
+    /// as the mesh half: a wall-clock deadline AND a per-tick member
+    /// cap, checked BETWEEN members; whatever doesn't fit retries
+    /// next frame (the state machine re-plans the same set).
     pub fn load_paired_meshes(
         &mut self,
         hashes: &[u32],
         cam: [f32; 3],
         pool_room: usize,
+        deadline: Option<std::time::Instant>,
+        max_members: usize,
     ) -> MemberPairedMeshes {
         let mut out = MemberPairedMeshes::default();
         let mut room = pool_room;
+        let mut loaded_members = 0usize;
         for &hash in hashes {
             if room == 0 {
                 out.pool_capped = true;
                 break;
             }
+            if loaded_members >= max_members {
+                out.member_capped = true;
+                break;
+            }
+            if let Some(d) = deadline {
+                if std::time::Instant::now() >= d {
+                    out.time_capped = true;
+                    break;
+                }
+            }
             if self.paired_loaded.contains(&hash) {
                 continue; // already in the App's pool (boot seed or earlier load)
             }
+            loaded_members += 1;
             let Some(&gi) = self.hash_to_gi.get(&hash) else {
                 out.note_error(format!("paired: hash {hash:#x}: not in the member table"));
                 continue;
@@ -939,7 +970,7 @@ mod tests {
         let at_a = stream.plan(a_center);
         assert_eq!(at_a.load, vec![0x51a2_ca3b]);
         stream.load_meshes(&at_a.load, 64, None, usize::MAX);
-        let paired_a = stream.load_paired_meshes(&at_a.load, a_center, 64);
+        let paired_a = stream.load_paired_meshes(&at_a.load, a_center, 64, None, usize::MAX);
         assert_eq!(paired_a.errors, 0, "{:?}", paired_a.first_errors);
         assert_eq!(paired_a.attempted, at_a.load, "A marked paired-loaded");
         assert!(paired_a.loads[0].meshes.is_empty(), "no pairs keyed to A");
@@ -953,7 +984,7 @@ mod tests {
         stream.unload_paired(&at_b.unload);
         stream.load_meshes(&at_b.load, 64, None, usize::MAX);
         assert!(stream.paired_loaded().is_empty());
-        let paired_b = stream.load_paired_meshes(&at_b.load, sign, 64);
+        let paired_b = stream.load_paired_meshes(&at_b.load, sign, 64, None, usize::MAX);
         assert_eq!(paired_b.errors, 0, "{:?}", paired_b.first_errors);
         assert_eq!(paired_b.attempted, at_b.load);
         assert_eq!(paired_b.skipped_prop_table, 2, "prop-table pairs skipped");
@@ -974,7 +1005,7 @@ mod tests {
         assert!((pos[2] - 331.50858).abs() < 1e-3);
         assert_eq!(stream.paired_loaded().len(), 1);
         // settle: a second pass at B is a no-op (already loaded)
-        let settle = stream.load_paired_meshes(&at_b.load, sign, 64);
+        let settle = stream.load_paired_meshes(&at_b.load, sign, 64, None, usize::MAX);
         assert!(settle.loads.is_empty() && settle.attempted.is_empty());
 
         // --- walk back: B's paired meshes unload and reload cleanly -
@@ -985,7 +1016,7 @@ mod tests {
         stream.unload_paired(&back.unload);
         assert!(stream.paired_loaded().is_empty());
         stream.load_meshes(&back.load, 64, None, usize::MAX);
-        let reload = stream.load_paired_meshes(&back.load, a_center, 64);
+        let reload = stream.load_paired_meshes(&back.load, a_center, 64, None, usize::MAX);
         assert_eq!(reload.errors, 0);
         assert_eq!(reload.attempted, back.load);
         assert!(reload.loads[0].meshes.is_empty(), "A's trivial paired load again");
@@ -1001,12 +1032,12 @@ mod tests {
         stream.seed_paired([b_hash]);
         assert_eq!(stream.paired_loaded().len(), 1);
         // a load pass over the seeded member does NOTHING
-        let none = stream.load_paired_meshes(&[b_hash], [0.0; 3], 64);
+        let none = stream.load_paired_meshes(&[b_hash], [0.0; 3], 64, None, usize::MAX);
         assert!(none.loads.is_empty() && none.attempted.is_empty());
         assert!(none.first_errors.is_empty());
         // unload → eligible again → reloads
         stream.unload_paired(&[b_hash]);
-        let again = stream.load_paired_meshes(&[b_hash], [0.0; 3], 64);
+        let again = stream.load_paired_meshes(&[b_hash], [0.0; 3], 64, None, usize::MAX);
         assert_eq!(again.attempted, vec![b_hash]);
         assert!(again.loads[0].meshes.len() >= 2);
     }
@@ -1021,7 +1052,7 @@ mod tests {
         let (mut stream, _) = pairing_stream(4);
         let b_hash = 0x2268_de7e;
         let sign = [199.99554, 27.7564, 331.50858];
-        let capped = stream.load_paired_meshes(&[b_hash], sign, 1);
+        let capped = stream.load_paired_meshes(&[b_hash], sign, 1, None, usize::MAX);
         assert_eq!(capped.errors, 0, "{:?}", capped.first_errors);
         assert_eq!(capped.attempted, vec![b_hash]);
         assert_eq!(capped.loads[0].meshes.len(), 1, "exactly the room");
@@ -1029,7 +1060,34 @@ mod tests {
         assert_eq!(stream.paired_loaded().len(), 1);
         // the truncated meshes come back only after unload + reload
         stream.unload_paired(&[b_hash]);
-        let full = stream.load_paired_meshes(&[b_hash], sign, 64);
+        let full = stream.load_paired_meshes(&[b_hash], sign, 64, None, usize::MAX);
         assert!(full.loads[0].meshes.len() >= 2);
+    }
+
+    /// Block 121: the paired budget fails OPEN for progress and CLOSED
+    /// for the frame: a deadline in the past attempts NOTHING (all
+    /// pending, time_capped reported), and a member cap of 1 takes
+    /// exactly one member per tick (the rest retries next tick).
+    #[test]
+    fn paired_loads_are_budgeted_like_the_mesh_half() {
+        let (mut stream, _) = pairing_stream(4);
+        let b_hash = 0x2268_de7e;
+        let sign = [199.99554, 27.7564, 331.50858];
+        // Deadline in the past: nothing attempted, time_capped set,
+        // nothing marked loaded (the whole set stays pending).
+        let past = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        let none = stream.load_paired_meshes(&[b_hash], sign, 64, Some(past), usize::MAX);
+        assert!(none.loads.is_empty() && none.attempted.is_empty());
+        assert!(none.time_capped);
+        assert_eq!(stream.paired_loaded().len(), 0);
+        // Member cap 1 with two pending members... the pairing fixture
+        // has one paired member — pin the cap on it: 1 tick loads it,
+        // and a further tick over the same set is a no-op (settled).
+        let one = stream.load_paired_meshes(&[b_hash], sign, 64, None, 1);
+        assert_eq!(one.attempted, vec![b_hash], "cap 1 takes the member");
+        assert!(!one.member_capped, "the set had exactly one member");
+        assert_eq!(stream.paired_loaded().len(), 1);
+        let settle = stream.load_paired_meshes(&[b_hash], sign, 64, None, 1);
+        assert!(settle.attempted.is_empty(), "already loaded, nothing to do");
     }
 }
